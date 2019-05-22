@@ -128,7 +128,7 @@ const ZeeAlloc = struct {
         if (memsize > self.page_size) {
             return null;
         }
-        return std.math.max(self.free_smalls.len - 1, inv_bitsize(self.page_size, memsize));
+        return std.math.min(self.free_smalls.len - 1, inv_bitsize(self.page_size, memsize));
     }
 
     fn findUnusedNode(self: *ZeeAlloc, target_smalls_index: usize) ?*FreeList.Node {
