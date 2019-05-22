@@ -12,11 +12,12 @@ const ZeeAlloc = struct {
     backing_allocator: *Allocator,
     page_size: usize,
 
+    free_smalls: []FreeList,
+    free_large: FreeList,
     unused_nodes: FreeList,
-    free_lists: []FreeList,
 
     pub fn init(backing_allocator: *Allocator, page_size: usize) @This() {
-        var free_lists = []FreeList{FreeList.init()} ** total_lists;
+        var free_smalls = []FreeList{FreeList.init()} ** total_lists;
 
         return ZeeAlloc{
             .allocator = Allocator{
@@ -26,8 +27,9 @@ const ZeeAlloc = struct {
             .backing_allocator = backing_allocator,
             .page_size = page_size,
 
+            .free_smalls = free_smalls[0..],
+            .free_large = FreeList.init(),
             .unused_nodes = FreeList.init(),
-            .free_lists = free_lists[0..],
         };
     }
 
@@ -39,8 +41,9 @@ const ZeeAlloc = struct {
     }
 
     fn allocSmall(self: *ZeeAlloc, inv_bitsize: usize) Allocator.Error![]u8 {
-        var free_list = self.free_lists[inv_bitsize];
+        var free_list = self.free_smalls[inv_bitsize];
         if (free_list.pop()) |node| {
+            self.unused_nodes.append(node);
             return node.data;
         }
 
@@ -65,6 +68,14 @@ const ZeeAlloc = struct {
     }
 
     fn allocLarge(self: *ZeeAlloc, memsize: usize) ![]u8 {
+        var it = self.free_large.first;
+        while (it) |node| : (it = node.next) {
+            if (node.data.len == memsize) {
+                self.free_large.remove(node);
+                self.unused_nodes.append(node);
+                return node.data;
+            }
+        }
         return self.backing_allocator.alloc(u8, memsize);
     }
 
@@ -78,6 +89,13 @@ const ZeeAlloc = struct {
     }
 
     fn free(self: *ZeeAlloc, old_mem: []u8) []u8 {
+        if (self.unused_nodes.first == null) {
+            self.replenishUnused() catch {
+                // Can't allocate to process freed memory. Leak!
+                return old_mem;
+            };
+        }
+
         if (old_mem.len <= self.page_size) {
             return self.freeSmall(old_mem);
         } else {
@@ -86,18 +104,11 @@ const ZeeAlloc = struct {
     }
 
     fn freeSmall(self: *ZeeAlloc, old_mem: []u8) []u8 {
-        if (self.unused_nodes.first == null) {
-            self.replenishUnused() catch {
-                // Can't allocate to process freed memory. Leak!
-                return old_mem;
-            };
-        }
-
         const inv_bitsize = std.math.log2(self.page_size / old_mem.len);
-        var free_list = self.free_lists[inv_bitsize];
-        if (self.unused_nodes.pop()) |free_node| {
-            free_node.data = old_mem;
-            free_list.append(free_node);
+        var free_list = self.free_smalls[inv_bitsize];
+        if (self.unused_nodes.pop()) |node| {
+            node.data = old_mem;
+            free_list.append(node);
             return []u8{};
         } else {
             std.debug.assert(false); // Not sure how we got here...
@@ -106,7 +117,14 @@ const ZeeAlloc = struct {
     }
 
     fn freeLarge(self: *ZeeAlloc, old_mem: []u8) []u8 {
-        return old_mem;
+        if (self.unused_nodes.pop()) |node| {
+            node.data = old_mem;
+            self.free_large.append(node);
+            return []u8{};
+        } else {
+            std.debug.assert(false); // Not sure how we got here...
+            return old_mem;
+        }
     }
 
     fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
