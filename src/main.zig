@@ -4,7 +4,7 @@ const Error = std.mem.Allocator.Error;
 
 const FreeList = std.LinkedList([]u8);
 
-const TOTAL_LISTS = 16;
+pub const total_lists = 16;
 
 const ZeeAlloc = struct {
     pub allocator: Allocator,
@@ -13,9 +13,11 @@ const ZeeAlloc = struct {
     page_size: usize,
 
     unused_nodes: FreeList,
-    free_lists: [TOTAL_LISTS]FreeList,
+    free_lists: []FreeList,
 
     pub fn init(backing_allocator: *Allocator, page_size: usize) @This() {
+        var free_lists = []FreeList{FreeList.init()} ** total_lists;
+
         return ZeeAlloc{
             .allocator = Allocator{
                 .reallocFn = realloc,
@@ -25,7 +27,7 @@ const ZeeAlloc = struct {
             .page_size = page_size,
 
             .unused_nodes = FreeList.init(),
-            .free_lists = []FreeList{FreeList.init()} ** TOTAL_LISTS,
+            .free_lists = free_lists[0..],
         };
     }
 
@@ -36,17 +38,21 @@ const ZeeAlloc = struct {
         }
     }
 
-    fn allocSmall(self: *ZeeAlloc, bitsize: usize) Error![]u8 {
-        var free_list = self.free_lists[bitsize];
+    fn allocSmall(self: *ZeeAlloc, inv_bitsize: usize) Error![]u8 {
+        var free_list = self.free_lists[inv_bitsize];
         if (free_list.pop()) |node| {
             return node.data;
+        }
+
+        if (inv_bitsize == 0) {
+            return self.backing_allocator.alloc(u8, self.page_size);
         }
 
         if (self.unused_nodes.first == null) {
             try self.replenishFree();
         }
 
-        const chunk = try self.allocSmall(bitsize + 1);
+        const chunk = try self.allocSmall(inv_bitsize - 1);
         const memsize = chunk.len / 2;
 
         if (self.unused_nodes.pop()) |free_node| {
@@ -64,8 +70,8 @@ const ZeeAlloc = struct {
 
     fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
         if (memsize < self.page_size) {
-            const bitsize = std.math.log2(memsize);
-            return self.allocSmall(bitsize);
+            const inv_bitsize = std.math.log2(self.page_size / memsize);
+            return self.allocSmall(std.math.min(inv_bitsize, total_lists - 1));
         } else {
             return self.allocLarge(memsize);
         }
