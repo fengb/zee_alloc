@@ -20,14 +20,17 @@ var NoopAllocator = Allocator{
     .shrinkFn = shrink,
 };
 
+const large_index = 0;
+const page_index = 1;
+const small_index_start = 2;
+
 const ZeeAlloc = struct {
     pub allocator: Allocator,
 
     backing_allocator: *Allocator,
     page_size: usize,
 
-    free_smalls: []FreeList,
-    free_large: FreeList,
+    free_lists: []FreeList,
     unused_nodes: FreeList,
 
     fn inv_bitsize(ref: usize, target: usize) usize {
@@ -35,8 +38,8 @@ const ZeeAlloc = struct {
     }
 
     pub fn init(backing_allocator: *Allocator, comptime page_size: usize, comptime min_size: usize) @This() {
-        const total_lists = inv_bitsize(page_size, min_size);
-        var free_smalls = []FreeList{FreeList.init()} ** total_lists;
+        const total_lists = inv_bitsize(page_size, min_size) + page_index;
+        var free_lists = []FreeList{FreeList.init()} ** total_lists;
 
         return ZeeAlloc{
             .allocator = Allocator{
@@ -46,8 +49,7 @@ const ZeeAlloc = struct {
             .backing_allocator = backing_allocator,
             .page_size = page_size,
 
-            .free_smalls = free_smalls[0..],
-            .free_large = FreeList.init(),
+            .free_lists = free_lists[0..],
             .unused_nodes = FreeList.init(),
         };
     }
@@ -62,49 +64,31 @@ const ZeeAlloc = struct {
         }
     }
 
-    fn allocSmall(self: *ZeeAlloc, smalls_index: usize) Allocator.Error![]u8 {
-        var free_list = self.free_smalls[smalls_index];
-        if (free_list.pop()) |node| {
-            self.unused_nodes.append(node);
-            return node.data;
-        }
-
-        if (smalls_index == 0) {
-            return self.backing_allocator.alloc(u8, self.page_size);
-        }
-
-        try self.replenishUnusedIfNeeded();
-
-        const chunk = try self.allocSmall(smalls_index - 1);
-        const memsize = chunk.len / 2;
-
-        if (self.unused_nodes.pop()) |free_node| {
-            free_node.data = chunk[memsize..];
-            free_list.append(free_node);
-        } else {
-            std.debug.assert(false); // Not sure how we got here... replenishUnused() didn't get enough?
-        }
-        return chunk[0..memsize];
-    }
-
-    fn allocLarge(self: *ZeeAlloc, memsize: usize) ![]u8 {
-        var it = self.free_large.first;
+    fn alloc(self: *ZeeAlloc, memsize: usize, i: usize) Allocator.Error![]u8 {
+        var free_list = self.free_lists[i];
+        var it = free_list.first;
         while (it) |node| : (it = node.next) {
             if (node.data.len == memsize) {
-                self.free_large.remove(node);
+                free_list.remove(node);
                 self.unused_nodes.append(node);
                 return node.data;
             }
         }
-        return self.backing_allocator.alloc(u8, memsize);
-    }
 
-    fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
-        if (self.freeSmallsIndex(memsize)) |i| {
-            return self.allocSmall(i);
-        } else {
-            return self.allocLarge(memsize);
+        if (i <= page_index) {
+            return self.backing_allocator.alloc(u8, memsize);
         }
+
+        const raw_mem = try self.alloc(memsize / 2, i - 1);
+
+        try self.replenishUnusedIfNeeded();
+        if (self.unused_nodes.pop()) |node| {
+            node.data = raw_mem[memsize..];
+            free_list.append(node);
+        } else {
+            std.debug.assert(false); // Not sure how we got here... replenishUnused() didn't get enough?
+        }
+        return raw_mem[0..memsize];
     }
 
     fn free(self: *ZeeAlloc, old_mem: []u8) []u8 {
@@ -113,33 +97,31 @@ const ZeeAlloc = struct {
             //std.debug.warn("ZeeAlloc: replenishUnused failed\n");
         };
 
-        const smalls_index = self.freeSmallsIndex(old_mem.len);
-        if (self.findUnusedNode(smalls_index orelse 0)) |node| {
+        const i = self.freeListIndex(old_mem.len);
+        if (self.findUnusedNode(std.math.max(i, small_index_start))) |node| {
             node.data = old_mem;
-
-            var free_list = if (smalls_index) |i| self.free_smalls[i] else self.free_large;
-            free_list.append(node);
+            self.free_lists[i].append(node);
         }
 
         return old_mem;
     }
 
-    fn freeSmallsIndex(self: *ZeeAlloc, memsize: usize) ?usize {
+    fn freeListIndex(self: *ZeeAlloc, memsize: usize) usize {
         if (memsize > self.page_size) {
-            return null;
+            return 0;
         }
-        return std.math.min(self.free_smalls.len - 1, inv_bitsize(self.page_size, memsize));
+        return std.math.min(self.free_lists.len - 1, inv_bitsize(self.page_size, memsize) + page_index);
     }
 
-    fn findUnusedNode(self: *ZeeAlloc, target_smalls_index: usize) ?*FreeList.Node {
+    fn findUnusedNode(self: *ZeeAlloc, target_index: usize) ?*FreeList.Node {
         if (self.unused_nodes.pop()) |node| {
             return node;
         }
 
-        var i = self.free_smalls.len - 1;
-        while (i > target_smalls_index) : (i -= 1) {
-            if (self.free_smalls[i].pop()) |node| {
-                //std.debug.warn("ZeeAlloc: using free_smalls[{}]\n", i);
+        var i = self.free_lists.len - 1;
+        while (i > target_index) : (i -= 1) {
+            if (self.free_lists[i].pop()) |node| {
+                //std.debug.warn("ZeeAlloc: using free_lists[{}]\n", i);
                 return node;
             }
         }
@@ -154,7 +136,7 @@ const ZeeAlloc = struct {
             return error.OutOfMemory;
         } else {
             const self = @fieldParentPtr(ZeeAlloc, "allocator", allocator);
-            const result = try self.alloc(new_size + new_align);
+            const result = try self.alloc(new_size, self.freeListIndex(new_size));
             std.mem.copy(u8, result, old_mem);
             _ = self.free(old_mem);
             return result;
