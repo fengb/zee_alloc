@@ -83,7 +83,7 @@ const ZeeAlloc = struct {
 
     fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
         if (memsize <= self.page_size) {
-            const inv_bitsize = std.math.log2(self.page_size / memsize);
+            const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, memsize);
             return try self.allocSmall(std.math.min(inv_bitsize, total_lists - 1));
         } else {
             return self.allocLarge(memsize);
@@ -106,7 +106,7 @@ const ZeeAlloc = struct {
     }
 
     fn freeSmall(self: *ZeeAlloc, old_mem: []u8) []u8 {
-        const inv_bitsize = std.math.log2(self.page_size / old_mem.len);
+        const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, old_mem.len);
         var free_list = self.free_smalls[inv_bitsize];
         if (self.unused_nodes.pop()) |node| {
             node.data = old_mem;
