@@ -4,9 +4,9 @@ const testing = std.testing;
 
 const FreeList = std.LinkedList([]u8);
 
-pub const total_lists = 16;
+export const default_min_size = @typeInfo(usize).Int.bits;
 
-export const wasm_allocator = &ZeeAlloc.init(std.heap.wasm_allocator, std.os.page_size).allocator;
+export const wasm_allocator = &ZeeAlloc.init(std.heap.wasm_allocator, std.os.page_size, default_min_size).allocator;
 
 const ZeeAlloc = struct {
     pub allocator: Allocator,
@@ -18,7 +18,8 @@ const ZeeAlloc = struct {
     free_large: FreeList,
     unused_nodes: FreeList,
 
-    pub fn init(backing_allocator: *Allocator, page_size: usize) @This() {
+    pub fn init(backing_allocator: *Allocator, comptime page_size: usize, comptime min_size: usize) @This() {
+        const total_lists = std.math.log2_int_ceil(usize, page_size) - std.math.log2_int_ceil(usize, min_size);
         var free_smalls = []FreeList{FreeList.init()} ** total_lists;
 
         return ZeeAlloc{
@@ -84,7 +85,7 @@ const ZeeAlloc = struct {
     fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
         if (memsize <= self.page_size) {
             const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, memsize);
-            return try self.allocSmall(std.math.min(inv_bitsize, total_lists - 1));
+            return try self.allocSmall(std.math.min(inv_bitsize, self.free_smalls.len - 1));
         } else {
             return self.allocLarge(memsize);
         }
@@ -188,6 +189,6 @@ test "DirectAllocator" {
     var direct_allocator = std.heap.DirectAllocator.init();
     defer direct_allocator.deinit();
 
-    var zee_alloc = ZeeAlloc.init(&direct_allocator.allocator, std.os.page_size);
+    var zee_alloc = ZeeAlloc.init(&direct_allocator.allocator, std.os.page_size, default_min_size);
     try testAllocator(&zee_alloc.allocator);
 }
