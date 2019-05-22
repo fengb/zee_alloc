@@ -30,8 +30,12 @@ const ZeeAlloc = struct {
     free_large: FreeList,
     unused_nodes: FreeList,
 
+    fn inv_bitsize(ref: usize, target: usize) usize {
+        return std.math.log2_int_ceil(usize, ref) - std.math.log2_int_ceil(usize, target);
+    }
+
     pub fn init(backing_allocator: *Allocator, comptime page_size: usize, comptime min_size: usize) @This() {
-        const total_lists = std.math.log2_int_ceil(usize, page_size) - std.math.log2_int_ceil(usize, min_size);
+        const total_lists = inv_bitsize(page_size, min_size);
         var free_smalls = []FreeList{FreeList.init()} ** total_lists;
 
         return ZeeAlloc{
@@ -55,14 +59,14 @@ const ZeeAlloc = struct {
         }
     }
 
-    fn allocSmall(self: *ZeeAlloc, inv_bitsize: usize) Allocator.Error![]u8 {
-        var free_list = self.free_smalls[inv_bitsize];
+    fn allocSmall(self: *ZeeAlloc, smalls_index: usize) Allocator.Error![]u8 {
+        var free_list = self.free_smalls[smalls_index];
         if (free_list.pop()) |node| {
             self.unused_nodes.append(node);
             return node.data;
         }
 
-        if (inv_bitsize == 0) {
+        if (smalls_index == 0) {
             return self.backing_allocator.alloc(u8, self.page_size);
         }
 
@@ -70,7 +74,7 @@ const ZeeAlloc = struct {
             try self.replenishUnused();
         }
 
-        const chunk = try self.allocSmall(inv_bitsize - 1);
+        const chunk = try self.allocSmall(smalls_index - 1);
         const memsize = chunk.len / 2;
 
         if (self.unused_nodes.pop()) |free_node| {
@@ -95,9 +99,8 @@ const ZeeAlloc = struct {
     }
 
     fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
-        if (memsize <= self.page_size) {
-            const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, memsize);
-            return try self.allocSmall(std.math.min(inv_bitsize, self.free_smalls.len - 1));
+        if (self.freeSmallsIndex(memsize)) |i| {
+            return self.allocSmall(i);
         } else {
             return self.allocLarge(memsize);
         }
@@ -111,12 +114,12 @@ const ZeeAlloc = struct {
             };
         }
 
-        if (self.findUnusedNode(old_mem.len)) |node| {
+        const smalls_index = self.freeSmallsIndex(old_mem.len);
+        if (self.findUnusedNode(smalls_index orelse 0)) |node| {
             node.data = old_mem;
 
-            if (old_mem.len <= self.page_size) {
-                const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, old_mem.len);
-                self.free_smalls[inv_bitsize].append(node);
+            if (smalls_index) |i| {
+                self.free_smalls[i].append(node);
             } else {
                 self.free_large.append(node);
             }
@@ -125,18 +128,20 @@ const ZeeAlloc = struct {
         return old_mem;
     }
 
-    fn findUnusedNode(self: *ZeeAlloc, target_memsize: usize) ?*FreeList.Node {
+    fn freeSmallsIndex(self: *ZeeAlloc, memsize: usize) ?usize {
+        if (memsize > self.page_size) {
+            return null;
+        }
+        return std.math.max(self.free_smalls.len - 1, inv_bitsize(self.page_size, memsize));
+    }
+
+    fn findUnusedNode(self: *ZeeAlloc, target_smalls_index: usize) ?*FreeList.Node {
         if (self.unused_nodes.pop()) |node| {
             return node;
         }
 
-        const target_inv_bitsize = if (target_memsize < self.page_size)
-            std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, target_memsize)
-        else
-            0;
-
         var i = self.free_smalls.len - 1;
-        while (i > target_inv_bitsize) : (i -= 1) {
+        while (i > target_smalls_index) : (i -= 1) {
             if (self.free_smalls[i].pop()) |node| {
                 //std.debug.warn("ZeeAlloc: using free_smalls[{}]\n", i);
                 return node;
