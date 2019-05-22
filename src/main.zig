@@ -52,7 +52,10 @@ const ZeeAlloc = struct {
         };
     }
 
-    fn replenishUnused(self: *ZeeAlloc) !void {
+    fn replenishUnusedIfNeeded(self: *ZeeAlloc) !void {
+        if (self.unused_nodes.first != null) {
+            return;
+        }
         var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
         for (buffer) |*node| {
             self.unused_nodes.append(node);
@@ -70,9 +73,7 @@ const ZeeAlloc = struct {
             return self.backing_allocator.alloc(u8, self.page_size);
         }
 
-        if (self.unused_nodes.first == null) {
-            try self.replenishUnused();
-        }
+        try self.replenishUnusedIfNeeded();
 
         const chunk = try self.allocSmall(smalls_index - 1);
         const memsize = chunk.len / 2;
@@ -107,22 +108,17 @@ const ZeeAlloc = struct {
     }
 
     fn free(self: *ZeeAlloc, old_mem: []u8) []u8 {
-        if (self.unused_nodes.first == null) {
-            self.replenishUnused() catch {
-                // Can't allocate to process freed memory. Try to continue the best we can.
-                //std.debug.warn("ZeeAlloc: replenishUnused failed\n");
-            };
-        }
+        self.replenishUnusedIfNeeded() catch {
+            // Can't allocate to process freed memory. Try to continue the best we can.
+            //std.debug.warn("ZeeAlloc: replenishUnused failed\n");
+        };
 
         const smalls_index = self.freeSmallsIndex(old_mem.len);
         if (self.findUnusedNode(smalls_index orelse 0)) |node| {
             node.data = old_mem;
 
-            if (smalls_index) |i| {
-                self.free_smalls[i].append(node);
-            } else {
-                self.free_large.append(node);
-            }
+            var free_list = if (smalls_index) |i| self.free_smalls[i] else self.free_large;
+            free_list.append(node);
         }
 
         return old_mem;
