@@ -1,6 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Error = std.mem.Allocator.Error;
+const testing = std.testing;
 
 const FreeList = std.LinkedList([]u8);
 
@@ -32,13 +32,13 @@ const ZeeAlloc = struct {
     }
 
     fn replenishFree(self: *ZeeAlloc) !void {
-        var buffer = try self.backing_allocator.alloc(FreeList.Node, @sizeOf(FreeList) / self.page_size);
+        var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
         for (buffer) |*node| {
             self.unused_nodes.append(node);
         }
     }
 
-    fn allocSmall(self: *ZeeAlloc, inv_bitsize: usize) Error![]u8 {
+    fn allocSmall(self: *ZeeAlloc, inv_bitsize: usize) Allocator.Error![]u8 {
         var free_list = self.free_lists[inv_bitsize];
         if (free_list.pop()) |node| {
             return node.data;
@@ -71,7 +71,7 @@ const ZeeAlloc = struct {
     fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
         if (memsize < self.page_size) {
             const inv_bitsize = std.math.log2(self.page_size / memsize);
-            return self.allocSmall(std.math.min(inv_bitsize, total_lists - 1));
+            return try self.allocSmall(std.math.min(inv_bitsize, total_lists - 1));
         } else {
             return self.allocLarge(memsize);
         }
@@ -81,7 +81,7 @@ const ZeeAlloc = struct {
         return old_mem;
     }
 
-    fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Error![]u8 {
+    fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
         if (new_size <= old_mem.len and new_align <= new_size) {
             // TODO: maybe intelligently shrink?
             // We can't do anything with the memory, so tell the client to keep it.
@@ -106,11 +106,40 @@ const ZeeAlloc = struct {
     }
 };
 
-const wasm_allocator = &ZeeAlloc.init(std.heap.wasm_allocator, std.os.page_size).allocator;
+// -- tests from std/heap.zig
 
-export fn foo() i64 {
-    const bar = wasm_allocator.create(i64) catch {
-        return -1;
-    };
-    return bar.*;
+fn testAllocator(allocator: *std.mem.Allocator) !void {
+    var slice = try allocator.alloc(*i32, 100);
+    testing.expect(slice.len == 100);
+    for (slice) |*item, i| {
+        item.* = try allocator.create(i32);
+        item.*.* = @intCast(i32, i);
+    }
+
+    slice = try allocator.realloc(slice, 20000);
+    testing.expect(slice.len == 20000);
+
+    for (slice[0..100]) |item, i| {
+        testing.expect(item.* == @intCast(i32, i));
+        allocator.destroy(item);
+    }
+
+    slice = allocator.shrink(slice, 50);
+    testing.expect(slice.len == 50);
+    slice = allocator.shrink(slice, 25);
+    testing.expect(slice.len == 25);
+    slice = allocator.shrink(slice, 0);
+    testing.expect(slice.len == 0);
+    slice = try allocator.realloc(slice, 10);
+    testing.expect(slice.len == 10);
+
+    allocator.free(slice);
+}
+
+test "DirectAllocator" {
+    var direct_allocator = std.heap.DirectAllocator.init();
+    defer direct_allocator.deinit();
+
+    var zee_alloc = ZeeAlloc.init(&direct_allocator.allocator, std.os.page_size);
+    try testAllocator(&zee_alloc.allocator);
 }
