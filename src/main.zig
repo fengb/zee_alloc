@@ -6,7 +6,19 @@ const FreeList = std.LinkedList([]u8);
 
 export const default_min_size = @typeInfo(usize).Int.bits;
 
-export const wasm_allocator = &ZeeAlloc.init(std.heap.wasm_allocator, std.os.page_size, default_min_size).allocator;
+// export const wasm_allocator = &ZeeAlloc.init(std.heap.wasm_allocator, std.os.page_size, default_min_size).allocator;
+export const fake_allocator = &ZeeAlloc.init(&NoopAllocator, std.os.page_size, default_min_size).allocator;
+
+fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
+    return old_mem;
+}
+fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
+    return old_mem;
+}
+var NoopAllocator = Allocator{
+    .reallocFn = realloc,
+    .shrinkFn = shrink,
+};
 
 const ZeeAlloc = struct {
     pub allocator: Allocator,
@@ -94,40 +106,44 @@ const ZeeAlloc = struct {
     fn free(self: *ZeeAlloc, old_mem: []u8) []u8 {
         if (self.unused_nodes.first == null) {
             self.replenishUnused() catch {
-                // Can't allocate to process freed memory. Leak!
-                return old_mem;
+                // Can't allocate to process freed memory. Try to continue the best we can.
+                //std.debug.warn("ZeeAlloc: replenishUnused failed\n");
             };
         }
 
-        if (old_mem.len <= self.page_size) {
-            return self.freeSmall(old_mem);
-        } else {
-            return self.freeLarge(old_mem);
+        if (self.findUnusedNode(old_mem.len)) |node| {
+            node.data = old_mem;
+
+            if (old_mem.len <= self.page_size) {
+                const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, old_mem.len);
+                self.free_smalls[inv_bitsize].append(node);
+            } else {
+                self.free_large.append(node);
+            }
         }
+
+        return old_mem;
     }
 
-    fn freeSmall(self: *ZeeAlloc, old_mem: []u8) []u8 {
-        const inv_bitsize = std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, old_mem.len);
-        var free_list = self.free_smalls[inv_bitsize];
+    fn findUnusedNode(self: *ZeeAlloc, target_memsize: usize) ?*FreeList.Node {
         if (self.unused_nodes.pop()) |node| {
-            node.data = old_mem;
-            free_list.append(node);
-            return []u8{};
-        } else {
-            std.debug.assert(false); // Not sure how we got here...
-            return old_mem;
+            return node;
         }
-    }
 
-    fn freeLarge(self: *ZeeAlloc, old_mem: []u8) []u8 {
-        if (self.unused_nodes.pop()) |node| {
-            node.data = old_mem;
-            self.free_large.append(node);
-            return []u8{};
-        } else {
-            std.debug.assert(false); // Not sure how we got here...
-            return old_mem;
+        const target_inv_bitsize = if (target_memsize < self.page_size)
+            std.math.log2_int_ceil(usize, self.page_size) - std.math.log2_int_ceil(usize, target_memsize)
+        else
+            0;
+
+        var i = self.free_smalls.len - 1;
+        while (i > target_inv_bitsize) : (i -= 1) {
+            if (self.free_smalls[i].pop()) |node| {
+                //std.debug.warn("ZeeAlloc: using free_smalls[{}]\n", i);
+                return node;
+            }
         }
+
+        return null;
     }
 
     fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
@@ -150,7 +166,7 @@ const ZeeAlloc = struct {
             return self.free(old_mem);
         } else {
             // TODO: maybe intelligently shrink?
-            return old_mem[0..new_size];
+            return old_mem;
         }
     }
 };
