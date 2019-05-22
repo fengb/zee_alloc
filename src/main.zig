@@ -31,7 +31,7 @@ const ZeeAlloc = struct {
         };
     }
 
-    fn replenishFree(self: *ZeeAlloc) !void {
+    fn replenishUnused(self: *ZeeAlloc) !void {
         var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
         for (buffer) |*node| {
             self.unused_nodes.append(node);
@@ -49,7 +49,7 @@ const ZeeAlloc = struct {
         }
 
         if (self.unused_nodes.first == null) {
-            try self.replenishFree();
+            try self.replenishUnused();
         }
 
         const chunk = try self.allocSmall(inv_bitsize - 1);
@@ -59,7 +59,7 @@ const ZeeAlloc = struct {
             free_node.data = chunk[memsize..];
             free_list.append(free_node);
         } else {
-            std.debug.assert(false); // Not sure how we got here... replenishFree() didn't get enough?
+            std.debug.assert(false); // Not sure how we got here... replenishUnused() didn't get enough?
         }
         return chunk[0..memsize];
     }
@@ -69,7 +69,7 @@ const ZeeAlloc = struct {
     }
 
     fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
-        if (memsize < self.page_size) {
+        if (memsize <= self.page_size) {
             const inv_bitsize = std.math.log2(self.page_size / memsize);
             return try self.allocSmall(std.math.min(inv_bitsize, total_lists - 1));
         } else {
@@ -78,6 +78,34 @@ const ZeeAlloc = struct {
     }
 
     fn free(self: *ZeeAlloc, old_mem: []u8) []u8 {
+        if (old_mem.len <= self.page_size) {
+            return self.freeSmall(old_mem);
+        } else {
+            return self.freeLarge(old_mem);
+        }
+    }
+
+    fn freeSmall(self: *ZeeAlloc, old_mem: []u8) []u8 {
+        if (self.unused_nodes.first == null) {
+            self.replenishUnused() catch {
+                // Can't allocate to process freed memory. Leak!
+                return old_mem;
+            };
+        }
+
+        const inv_bitsize = std.math.log2(self.page_size / old_mem.len);
+        var free_list = self.free_lists[inv_bitsize];
+        if (self.unused_nodes.pop()) |free_node| {
+            free_node.data = old_mem;
+            free_list.append(free_node);
+            return []u8{};
+        } else {
+            std.debug.assert(false); // Not sure how we got here...
+            return old_mem;
+        }
+    }
+
+    fn freeLarge(self: *ZeeAlloc, old_mem: []u8) []u8 {
         return old_mem;
     }
 
