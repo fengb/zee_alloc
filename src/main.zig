@@ -2,42 +2,59 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Error = std.mem.Allocator.Error;
 
-const FreeNode = struct {
-    data: ?[]u8,
+const FreeList = std.LinkedList([]u8);
 
-    pub fn empty() @This() {
-        return FreeNode{ .data = []u8{} };
-    }
-};
+const TOTAL_LISTS = 16;
 
 const ZeeAlloc = struct {
     pub allocator: Allocator,
 
     backing_allocator: *Allocator,
-    free_nodes: [16]FreeNode,
     page_size: usize,
 
-    pub fn init(backing_allocator: *Allocator, page_size: usize) ZeeAlloc {
+    unused_nodes: FreeList,
+    free_lists: [TOTAL_LISTS]FreeList,
+
+    pub fn init(backing_allocator: *Allocator, page_size: usize) @This() {
         return ZeeAlloc{
             .allocator = Allocator{
                 .reallocFn = realloc,
                 .shrinkFn = shrink,
             },
             .backing_allocator = backing_allocator,
-            .free_nodes = []FreeNode{FreeNode.empty()} ** 16,
             .page_size = page_size,
+
+            .unused_nodes = FreeList.init(),
+            .free_lists = []FreeList{FreeList.init()} ** TOTAL_LISTS,
         };
     }
 
-    fn allocSmall(self: *ZeeAlloc, bitsize: usize) ![]u8 {
-        var free_node = self.free_nodes[bitsize];
-        if (free_node.data) |data| {
-            return data;
+    fn replenishFree(self: *ZeeAlloc) !void {
+        var buffer = try self.backing_allocator.alloc(FreeList.Node, @sizeOf(FreeList) / self.page_size);
+        for (buffer) |*node| {
+            self.unused_nodes.append(node);
+        }
+    }
+
+    fn allocSmall(self: *ZeeAlloc, bitsize: usize) Error![]u8 {
+        var free_list = self.free_lists[bitsize];
+        if (free_list.pop()) |node| {
+            return node.data;
         }
 
-        const chunk = try self.alloc(bitsize + 1);
+        if (self.unused_nodes.first == null) {
+            try self.replenishFree();
+        }
+
+        const chunk = try self.allocSmall(bitsize + 1);
         const memsize = chunk.len / 2;
-        free_node.data = chunk[memsize..];
+
+        if (self.unused_nodes.pop()) |free_node| {
+            free_node.data = chunk[memsize..];
+            free_list.append(free_node);
+        } else {
+            std.debug.assert(false); // Not sure how we got here... replenishFree() didn't get enough?
+        }
         return chunk[0..memsize];
     }
 
@@ -45,10 +62,9 @@ const ZeeAlloc = struct {
         return self.backing_allocator.alloc(u8, memsize);
     }
 
-    fn alloc(self: *ZeeAlloc, memsize: usize) Error![]u8 {
+    fn alloc(self: *ZeeAlloc, memsize: usize) ![]u8 {
         if (memsize < self.page_size) {
-            const bitsize = 4;
-            //const bitsize = std.math.log2(memsize);
+            const bitsize = std.math.log2(memsize);
             return self.allocSmall(bitsize);
         } else {
             return self.allocLarge(memsize);
@@ -67,7 +83,7 @@ const ZeeAlloc = struct {
         } else {
             const self = @fieldParentPtr(ZeeAlloc, "allocator", allocator);
             const result = try self.alloc(new_size + new_align);
-            //@memcpy(result.ptr, old_mem.ptr, std.math.min(old_mem.len, result.len));
+            @memcpy(result.ptr, old_mem.ptr, std.math.min(old_mem.len, result.len));
             _ = self.free(old_mem);
             return result;
         }
