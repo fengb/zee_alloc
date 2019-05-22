@@ -6,6 +6,8 @@ const FreeList = std.LinkedList([]u8);
 
 pub const total_lists = 16;
 
+export const wasm_allocator = &ZeeAlloc.init(std.heap.wasm_allocator, std.os.page_size).allocator;
+
 const ZeeAlloc = struct {
     pub allocator: Allocator,
 
@@ -135,7 +137,7 @@ const ZeeAlloc = struct {
         } else {
             const self = @fieldParentPtr(ZeeAlloc, "allocator", allocator);
             const result = try self.alloc(new_size + new_align);
-            @memcpy(result.ptr, old_mem.ptr, std.math.min(old_mem.len, result.len));
+            std.mem.copy(u8, result, old_mem);
             _ = self.free(old_mem);
             return result;
         }
