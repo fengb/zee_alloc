@@ -101,6 +101,7 @@ const ZeeAlloc = struct {
         if (self.findUnusedNode(std.math.max(i, small_index_start))) |node| {
             node.data = old_mem;
             self.free_lists[i].append(node);
+            return []u8{};
         }
 
         return old_mem;
