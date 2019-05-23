@@ -123,10 +123,13 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
-            const i = self.freeListIndex(old_mem.len);
+            const block_size = self.padToBlockSize(old_mem.len);
+            const i = self.freeListIndex(block_size);
             const node = self.consumeUnusedNode() catch self.findLessImportantNode(std.math.max(i, page_index));
             if (node) |aNode| {
-                aNode.data = old_mem;
+                // Need to bump this back to the fixed block
+                // We're not storing this metadata; let's hope we did everything right!
+                aNode.data = old_mem.ptr[0..block_size];
                 self.free_lists[i].append(aNode);
             }
 
