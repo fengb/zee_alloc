@@ -68,14 +68,14 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             };
         }
 
-        fn replenishUnusedIfNeeded(self: *Self) !void {
-            if (self.unused_nodes.first != null) {
-                return;
+        fn consumeUnusedNode(self: *Self) !*FreeList.Node {
+            if (self.unused_nodes.first == null) {
+                var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
+                for (buffer) |*node| {
+                    self.unused_nodes.append(node);
+                }
             }
-            var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
-            for (buffer) |*node| {
-                self.unused_nodes.append(node);
-            }
+            return self.unused_nodes.pop() orelse error.OutOfMemory;
         }
 
         fn allocBlock(self: *Self, memsize: usize) Allocator.Error![]u8 {
@@ -109,31 +109,22 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 return block[0..target];
             }
 
-            try self.replenishUnusedIfNeeded();
-
             var block_iter = block;
             var sub_block_size = std.math.max(block.len / 2, page_index);
             while (sub_block_size > target_block_size) : (sub_block_size /= 2) {
-                if (self.unused_nodes.pop()) |node| {
-                    var i = self.freeListIndex(sub_block_size);
-                    node.data = block_iter[sub_block_size..];
-                    self.free_lists[i].append(node);
-                    block_iter = block_iter[0..sub_block_size];
-                } else {
-                    return error.OutOfMemory; // Not sure how we got here... replenishUnused() didn't get enough?
-                }
+                const node = try self.consumeUnusedNode();
+
+                var i = self.freeListIndex(sub_block_size);
+                node.data = block_iter[sub_block_size..];
+                self.free_lists[i].append(node);
+                block_iter = block_iter[0..sub_block_size];
             }
             return block[0..target];
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
-            self.replenishUnusedIfNeeded() catch {
-                // Can't allocate to process freed memory. Try to continue the best we can.
-                //std.debug.warn("ZeeAlloc: replenishUnused failed\n");
-            };
-
             const i = self.freeListIndex(old_mem.len);
-            const node = self.unused_nodes.pop() orelse self.findLessImportantNode(std.math.max(i, page_index));
+            const node = self.consumeUnusedNode() catch self.findLessImportantNode(std.math.max(i, page_index));
             if (node) |aNode| {
                 aNode.data = old_mem;
                 self.free_lists[i].append(aNode);
