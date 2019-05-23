@@ -41,7 +41,7 @@ fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
 }
 
 pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type {
-    const size_buckets = invBitsize(page_size, min_block_size) + page_index;
+    const size_buckets = invBitsize(page_size * 2, min_block_size);
 
     return struct {
         const Self = @This();
@@ -150,7 +150,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             } else if (memsize <= min_block_size) {
                 return self.free_lists.len - 1;
             } else {
-                return invBitsize(self.page_size, memsize) + page_index;
+                return invBitsize(page_size * 2, memsize);
             }
         }
 
