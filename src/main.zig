@@ -23,12 +23,25 @@ const page_index = 1;
 
 pub const ZeeAllocDefaults = ZeeAlloc(std.os.page_size, @typeInfo(usize).Int.bits);
 
-fn inv_bitsize(ref: usize, target: usize) usize {
+fn invBitsize(ref: usize, target: usize) usize {
     return std.math.log2_int_ceil(usize, ref) - std.math.log2_int_ceil(usize, target);
 }
 
+fn ceilPowerOfTwo(comptime T: type, value: T) T {
+    const transformed = std.math.floorPowerOfTwo(T, value);
+    if (transformed == value) {
+        return transformed;
+    } else {
+        return transformed * 2;
+    }
+}
+
+fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
+    return value + (value + target - 1) % target;
+}
+
 pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
-    const size_buckets = inv_bitsize(page_size, min_size) + page_index;
+    const size_buckets = invBitsize(page_size, min_size) + page_index;
 
     return struct {
         const Self = @This();
@@ -65,11 +78,11 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
             }
         }
 
-        fn alloc(self: *Self, memsize: usize, i: usize) Allocator.Error![]u8 {
+        fn alloc(self: *Self, padded_size: usize, i: usize) Allocator.Error![]u8 {
             var free_list = self.free_lists[i];
             var it = free_list.first;
             while (it) |node| : (it = node.next) {
-                if (node.data.len == memsize) {
+                if (node.data.len == padded_size) {
                     free_list.remove(node);
                     self.unused_nodes.append(node);
                     return node.data;
@@ -77,19 +90,19 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
             }
 
             if (i <= page_index) {
-                return self.backing_allocator.alloc(u8, memsize);
+                return self.backing_allocator.alloc(u8, padded_size);
             }
 
-            const raw_mem = try self.alloc(memsize * 2, i - 1);
+            const raw_mem = try self.alloc(padded_size * 2, i - 1);
 
             try self.replenishUnusedIfNeeded();
             if (self.unused_nodes.pop()) |node| {
-                node.data = raw_mem[memsize..];
+                node.data = raw_mem[padded_size..];
                 free_list.append(node);
             } else {
                 std.debug.assert(false); // Not sure how we got here... replenishUnused() didn't get enough?
             }
-            return raw_mem[0..memsize];
+            return raw_mem[0..padded_size];
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
@@ -103,10 +116,17 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
             if (node) |aNode| {
                 aNode.data = old_mem;
                 self.free_lists[i].append(aNode);
-                return []u8{};
             }
 
-            return old_mem;
+            return old_mem[0..0];
+        }
+
+        fn pad(self: *Self, memsize: usize) usize {
+            if (memsize <= self.page_size) {
+                return ceilPowerOfTwo(usize, memsize);
+            } else {
+                return ceilToMultiple(page_size, memsize);
+            }
         }
 
         fn freeListIndex(self: *Self, memsize: usize) usize {
@@ -115,7 +135,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
             } else if (memsize <= min_size) {
                 return self.free_lists.len - 1;
             } else {
-                return inv_bitsize(self.page_size, memsize) + page_index;
+                return invBitsize(self.page_size, memsize) + page_index;
             }
         }
 
@@ -136,10 +156,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
                 return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
-                const result = try self.alloc(new_size, self.freeListIndex(new_size));
+                const result = try self.alloc(self.pad(new_size), self.freeListIndex(new_size));
                 std.mem.copy(u8, result, old_mem);
                 _ = self.free(old_mem);
-                return result;
+                return result[0..new_size];
             }
         }
 
