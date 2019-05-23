@@ -101,25 +101,22 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             return self.backing_allocator.alloc(u8, block_size);
         }
 
-        fn extractFromBlock(self: *Self, block: []u8, target: usize) ![]u8 {
-            std.debug.assert(target <= block.len);
+        fn extractFromBlock(self: *Self, block: []u8, memsize: usize) ![]u8 {
+            std.debug.assert(memsize <= block.len);
 
-            const target_block_size = self.padToBlockSize(target);
-            if (target_block_size == block.len) {
-                return block[0..target];
-            }
+            const target_block_size = self.padToBlockSize(memsize);
 
-            var block_iter = block;
+            var sub_block = block;
             var sub_block_size = std.math.max(block.len / 2, page_index);
             while (sub_block_size > target_block_size) : (sub_block_size /= 2) {
                 const node = try self.consumeUnusedNode();
 
                 var i = self.freeListIndex(sub_block_size);
-                node.data = block_iter[sub_block_size..];
+                node.data = sub_block[sub_block_size..];
                 self.free_lists[i].append(node);
-                block_iter = block_iter[0..sub_block_size];
+                sub_block = sub_block[0..sub_block_size];
             }
-            return block[0..target];
+            return sub_block[0..memsize];
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
