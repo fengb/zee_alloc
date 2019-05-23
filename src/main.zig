@@ -22,7 +22,6 @@ var NoopAllocator = Allocator{
 
 const large_index = 0;
 const page_index = 1;
-const small_index_start = 2;
 
 const ZeeAlloc = struct {
     pub allocator: Allocator,
@@ -98,9 +97,10 @@ const ZeeAlloc = struct {
         };
 
         const i = self.freeListIndex(old_mem.len);
-        if (self.findUnusedNode(std.math.max(i, small_index_start))) |node| {
-            node.data = old_mem;
-            self.free_lists[i].append(node);
+        const node = self.unused_nodes.pop() orelse self.findLessImportantNode(std.math.max(i, page_index));
+        if (node) |aNode| {
+            aNode.data = old_mem;
+            self.free_lists[i].append(aNode);
             return []u8{};
         }
 
@@ -114,11 +114,7 @@ const ZeeAlloc = struct {
         return std.math.min(self.free_lists.len - 1, inv_bitsize(self.page_size, memsize) + page_index);
     }
 
-    fn findUnusedNode(self: *ZeeAlloc, target_index: usize) ?*FreeList.Node {
-        if (self.unused_nodes.pop()) |node| {
-            return node;
-        }
-
+    fn findLessImportantNode(self: *ZeeAlloc, target_index: usize) ?*FreeList.Node {
         var i = self.free_lists.len - 1;
         while (i > target_index) : (i -= 1) {
             if (self.free_lists[i].pop()) |node| {
