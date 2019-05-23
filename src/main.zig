@@ -40,8 +40,8 @@ fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
     return value + (value + target - 1) % target;
 }
 
-pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
-    const size_buckets = invBitsize(page_size, min_size) + page_index;
+pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type {
+    const size_buckets = invBitsize(page_size, min_block_size) + page_index;
 
     return struct {
         const Self = @This();
@@ -78,31 +78,52 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
             }
         }
 
-        fn alloc(self: *Self, padded_size: usize, i: usize) Allocator.Error![]u8 {
-            var free_list = self.free_lists[i];
-            var it = free_list.first;
-            while (it) |node| : (it = node.next) {
-                if (node.data.len == padded_size) {
-                    free_list.remove(node);
-                    self.unused_nodes.append(node);
-                    return node.data;
+        fn allocBlock(self: *Self, memsize: usize) Allocator.Error![]u8 {
+            var block_size = self.padToBlockSize(memsize);
+
+            while (true) : (block_size *= 2) {
+                var i = self.freeListIndex(block_size);
+                var free_list = self.free_lists[i];
+                var it = free_list.first;
+                while (it) |node| : (it = node.next) {
+                    if (node.data.len == block_size) {
+                        free_list.remove(node);
+                        self.unused_nodes.append(node);
+                        return node.data;
+                    }
+                }
+
+                if (i <= page_size) {
+                    break;
                 }
             }
 
-            if (i <= page_index) {
-                return self.backing_allocator.alloc(u8, padded_size);
-            }
+            return self.backing_allocator.alloc(u8, block_size);
+        }
 
-            const raw_mem = try self.alloc(padded_size * 2, i - 1);
+        fn extractFromBlock(self: *Self, block: []u8, target: usize) ![]u8 {
+            std.debug.assert(target <= block.len);
+
+            const target_block_size = self.padToBlockSize(target);
+            if (target_block_size == block.len) {
+                return block[0..target];
+            }
 
             try self.replenishUnusedIfNeeded();
-            if (self.unused_nodes.pop()) |node| {
-                node.data = raw_mem[padded_size..];
-                free_list.append(node);
-            } else {
-                std.debug.assert(false); // Not sure how we got here... replenishUnused() didn't get enough?
+
+            var block_iter = block;
+            var sub_block_size = std.math.max(block.len / 2, page_index);
+            while (sub_block_size > target_block_size) : (sub_block_size /= 2) {
+                if (self.unused_nodes.pop()) |node| {
+                    var i = self.freeListIndex(sub_block_size);
+                    node.data = block_iter[sub_block_size..];
+                    self.free_lists[i].append(node);
+                    block_iter = block_iter[0..sub_block_size];
+                } else {
+                    return error.OutOfMemory; // Not sure how we got here... replenishUnused() didn't get enough?
+                }
             }
-            return raw_mem[0..padded_size];
+            return block[0..target];
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
@@ -121,7 +142,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
             return old_mem[0..0];
         }
 
-        fn pad(self: *Self, memsize: usize) usize {
+        fn padToBlockSize(self: *Self, memsize: usize) usize {
             if (memsize <= self.page_size) {
                 return ceilPowerOfTwo(usize, memsize);
             } else {
@@ -132,7 +153,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
         fn freeListIndex(self: *Self, memsize: usize) usize {
             if (memsize > self.page_size) {
                 return 0;
-            } else if (memsize <= min_size) {
+            } else if (memsize <= min_block_size) {
                 return self.free_lists.len - 1;
             } else {
                 return invBitsize(self.page_size, memsize) + page_index;
@@ -156,7 +177,8 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
                 return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
-                const result = try self.alloc(self.pad(new_size), self.freeListIndex(new_size));
+                const block = try self.allocBlock(new_size);
+                const result = try self.extractFromBlock(block, new_size);
                 std.mem.copy(u8, result, old_mem);
                 _ = self.free(old_mem);
                 return result[0..new_size];
@@ -164,14 +186,14 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
         }
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
+            const self = @fieldParentPtr(Self, "allocator", allocator);
             if (new_size == 0) {
-                const self = @fieldParentPtr(Self, "allocator", allocator);
                 return self.free(old_mem);
             } else {
-                // TODO: fix this leak with one of these solutions:
-                //       - shrink by chunks, adding smaller free nodes -- more complicated, higher accidental fragmentation
-                //       - add metadata of "true" size -- more memory required, "shrunk" memory is wasted, free is O(n)
-                return old_mem[0..new_size];
+                return self.extractFromBlock(old_mem, new_size) catch |err| switch (err) {
+                    // TODO: memory leak
+                    error.OutOfMemory => old_mem[0..new_size],
+                };
             }
         }
     };
