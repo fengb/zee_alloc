@@ -80,7 +80,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
                 return self.backing_allocator.alloc(u8, memsize);
             }
 
-            const raw_mem = try self.alloc(memsize / 2, i - 1);
+            const raw_mem = try self.alloc(memsize * 2, i - 1);
 
             try self.replenishUnusedIfNeeded();
             if (self.unused_nodes.pop()) |node| {
@@ -112,8 +112,11 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
         fn freeListIndex(self: *Self, memsize: usize) usize {
             if (memsize > self.page_size) {
                 return 0;
+            } else if (memsize <= min_size) {
+                return self.free_lists.len - 1;
+            } else {
+                return inv_bitsize(self.page_size, memsize) + page_index;
             }
-            return std.math.min(self.free_lists.len - 1, inv_bitsize(self.page_size, memsize) + page_index);
         }
 
         fn findLessImportantNode(self: *Self, target_index: usize) ?*FreeList.Node {
