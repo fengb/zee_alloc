@@ -187,10 +187,45 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 };
             }
         }
+
+        fn totalNodes(self: *Self) usize {
+            var sum = self.unused_nodes.len;
+            for (self.free_lists) |list| {
+                sum += list.len;
+            }
+            return sum;
+        }
+
+        fn dump(self: *Self) void {
+            std.debug.warn("unused: {}\n", self.unused_nodes.len);
+            for (self.free_lists) |list, i| {
+                std.debug.warn("{}: {}\n", i, list.len);
+            }
+        }
     };
 }
 
-// -- tests from std/heap.zig
+test "ZeeAlloc internals" {
+    var buf: [1000000]u8 = undefined;
+    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
+    var zee_alloc = ZeeAllocDefaults.init(allocator);
+
+    testing.expectEqual(zee_alloc.totalNodes(), 0);
+
+    @"node count makes sense": {
+        var mem = zee_alloc.allocator.create(u8);
+        const total_nodes = zee_alloc.totalNodes();
+        testing.expect(total_nodes > 0);
+        testing.expect(zee_alloc.unused_nodes.len > 0);
+        testing.expectEqual(zee_alloc.unused_nodes.len, total_nodes - 1);
+        zee_alloc.dump();
+
+        var mem2 = zee_alloc.allocator.create(u8);
+        zee_alloc.dump();
+    }
+}
+
+// -- functional tests from std/heap.zig
 
 fn testAllocator(allocator: *std.mem.Allocator) !void {
     var slice = try allocator.alloc(*i32, 100);
@@ -223,7 +258,7 @@ fn testAllocator(allocator: *std.mem.Allocator) !void {
 test "ZeeAlloc with FixedBufferAllocator" {
     var buf: [1000000]u8 = undefined;
     var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
-
     var zee_alloc = ZeeAllocDefaults.init(allocator);
+
     try testAllocator(&zee_alloc.allocator);
 }
