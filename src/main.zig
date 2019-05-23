@@ -133,9 +133,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
 
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
             if (new_size <= old_mem.len and new_align <= new_size) {
-                // TODO: maybe intelligently shrink?
-                // We can't do anything with the memory, so tell the client to keep it.
-                return error.OutOfMemory;
+                return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
                 const result = try self.alloc(new_size, self.freeListIndex(new_size));
@@ -150,10 +148,9 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
                 return self.free(old_mem);
             } else {
-                // TODO: shrink in chunks
-                // new_size - old_size
-                //   => 2+ pages, create a new large freenode
-                //   => small chunks, create all the necessary small freenodes
+                // TODO: fix this leak with one of these solutions:
+                //       - shrink by chunks, adding smaller free nodes -- more complicated, higher accidental fragmentation
+                //       - add metadata of "true" size -- more memory required, "shrunk" memory is wasted, free is O(n)
                 return old_mem[0..new_size];
             }
         }
