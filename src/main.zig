@@ -150,8 +150,11 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_size: usize) type {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
                 return self.free(old_mem);
             } else {
-                // TODO: maybe intelligently shrink?
-                return old_mem;
+                // TODO: shrink in chunks
+                // new_size - old_size
+                //   => 2+ pages, create a new large freenode
+                //   => small chunks, create all the necessary small freenodes
+                return old_mem[0..new_size];
             }
         }
     };
@@ -187,10 +190,10 @@ fn testAllocator(allocator: *std.mem.Allocator) !void {
     allocator.free(slice);
 }
 
-test "DirectAllocator" {
-    var direct_allocator = std.heap.DirectAllocator.init();
-    defer direct_allocator.deinit();
+test "ZeeAlloc with FixedBufferAllocator" {
+    var buf: [1000000]u8 = undefined;
+    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
 
-    var zee_alloc = ZeeAllocDefaults.init(&direct_allocator.allocator);
+    var zee_alloc = ZeeAllocDefaults.init(allocator);
     try testAllocator(&zee_alloc.allocator);
 }
