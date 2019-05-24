@@ -1,6 +1,5 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const testing = std.testing;
 
 const FreeList = std.LinkedList([]u8);
 
@@ -208,6 +207,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
     };
 }
 
+// Tests
+
+const testing = std.testing;
+
 test "ZeeAlloc helpers" {
     var buf: [0]u8 = undefined;
     var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
@@ -250,28 +253,28 @@ test "ZeeAlloc internals" {
 
 fn testAllocator(allocator: *std.mem.Allocator) !void {
     var slice = try allocator.alloc(*i32, 100);
-    testing.expect(slice.len == 100);
+    testing.expectEqual(slice.len, 100);
     for (slice) |*item, i| {
         item.* = try allocator.create(i32);
         item.*.* = @intCast(i32, i);
     }
 
     slice = try allocator.realloc(slice, 20000);
-    testing.expect(slice.len == 20000);
+    testing.expectEqual(slice.len, 20000);
 
     for (slice[0..100]) |item, i| {
-        testing.expect(item.* == @intCast(i32, i));
+        testing.expectEqual(item.*, @intCast(i32, i));
         allocator.destroy(item);
     }
 
     slice = allocator.shrink(slice, 50);
-    testing.expect(slice.len == 50);
+    testing.expectEqual(slice.len, 50);
     slice = allocator.shrink(slice, 25);
-    testing.expect(slice.len == 25);
+    testing.expectEqual(slice.len, 25);
     slice = allocator.shrink(slice, 0);
-    testing.expect(slice.len == 0);
+    testing.expectEqual(slice.len, 0);
     slice = try allocator.realloc(slice, 10);
-    testing.expect(slice.len == 10);
+    testing.expectEqual(slice.len, 10);
 
     allocator.free(slice);
 }
