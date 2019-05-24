@@ -27,13 +27,11 @@ fn invBitsize(ref: usize, target: usize) usize {
     return std.math.log2_int_ceil(usize, ref) - std.math.log2_int_ceil(usize, target);
 }
 
+// https://github.com/ziglang/zig/issues/2426
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
-    const transformed = std.math.floorPowerOfTwo(T, value);
-    if (transformed == value) {
-        return transformed;
-    } else {
-        return transformed * 2;
-    }
+    if (value <= 2) return value;
+    const Shift = comptime std.math.Log2Int(T);
+    return T(1) << @intCast(Shift, T.bit_count - @clz(value - 1));
 }
 
 fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
@@ -72,11 +70,12 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         fn consumeUnusedNode(self: *Self) !*FreeList.Node {
             if (self.unused_nodes.first == null) {
                 var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
+                std.debug.assert(buffer.len > 0);
                 for (buffer) |*node| {
                     self.unused_nodes.append(node);
                 }
             }
-            return self.unused_nodes.pop() orelse error.OutOfMemory;
+            return self.unused_nodes.pop() orelse unreachable;
         }
 
         fn allocBlock(self: *Self, memsize: usize) ![]u8 {
@@ -118,14 +117,16 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
-            const block_size = self.padToBlockSize(old_mem.len);
-            const i = self.freeListIndex(block_size);
-            const node = self.consumeUnusedNode() catch self.findLessImportantNode(std.math.max(i, page_index));
-            if (node) |aNode| {
-                // Need to bump this back to the fixed block
-                // We're not storing this metadata; let's hope we did everything right!
-                aNode.data = old_mem.ptr[0..block_size];
-                self.free_lists[i].append(aNode);
+            if (old_mem.len != 0) {
+                const block_size = self.padToBlockSize(old_mem.len);
+                const i = self.freeListIndex(block_size);
+                const node = self.consumeUnusedNode() catch self.consumeLessImportantNode(std.math.max(i, page_index));
+                if (node) |aNode| {
+                    // Need to bump this back to the fixed block
+                    // We're not storing this metadata; let's hope we did everything right!
+                    aNode.data = old_mem.ptr[0..block_size];
+                    self.free_lists[i].append(aNode);
+                }
             }
 
             return old_mem[0..0];
@@ -151,7 +152,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             }
         }
 
-        fn findLessImportantNode(self: *Self, target_index: usize) ?*FreeList.Node {
+        fn consumeLessImportantNode(self: *Self, target_index: usize) ?*FreeList.Node {
             var i = self.free_lists.len - 1;
             while (i > target_index) : (i -= 1) {
                 if (self.free_lists[i].pop()) |node| {
@@ -168,12 +169,12 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
+
                 const block = try self.allocBlock(new_size);
                 const result = try self.extractFromBlock(block, new_size);
-                if (old_mem.len > 0) {
-                    std.mem.copy(u8, result, old_mem);
-                    _ = self.free(old_mem);
-                }
+
+                std.mem.copy(u8, result, old_mem);
+                _ = self.free(old_mem);
                 return result[0..new_size];
             }
         }
