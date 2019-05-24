@@ -21,7 +21,7 @@ var NoopAllocator = Allocator{
 const large_index = 0;
 const page_index = 1;
 
-pub const ZeeAllocDefaults = ZeeAlloc(std.os.page_size, @typeInfo(usize).Int.bits);
+pub const ZeeAllocDefaults = ZeeAlloc(std.os.page_size, 4);
 
 fn invBitsize(ref: usize, target: usize) usize {
     return std.math.log2_int_ceil(usize, ref) - std.math.log2_int_ceil(usize, target);
@@ -37,11 +37,12 @@ fn ceilPowerOfTwo(comptime T: type, value: T) T {
 }
 
 fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
-    return value + (value + target - 1) % target;
+    const remainder = value % target;
+    return value + (target - remainder) % target;
 }
 
 pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type {
-    const size_buckets = invBitsize(page_size * 2, min_block_size);
+    const size_buckets = invBitsize(page_size, min_block_size) + 2; // large + page = 2 additional slots
 
     return struct {
         const Self = @This();
@@ -78,7 +79,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             return self.unused_nodes.pop() orelse error.OutOfMemory;
         }
 
-        fn allocBlock(self: *Self, memsize: usize) Allocator.Error![]u8 {
+        fn allocBlock(self: *Self, memsize: usize) ![]u8 {
             var block_size = self.padToBlockSize(memsize);
 
             while (true) : (block_size *= 2) {
@@ -93,12 +94,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                     }
                 }
 
-                if (i <= page_size) {
-                    break;
+                if (i <= page_index) {
+                    return self.backing_allocator.alloc(u8, block_size);
                 }
             }
-
-            return self.backing_allocator.alloc(u8, block_size);
         }
 
         fn extractFromBlock(self: *Self, block: []u8, memsize: usize) ![]u8 {
@@ -107,8 +106,8 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             const target_block_size = self.padToBlockSize(memsize);
 
             var sub_block = block;
-            var sub_block_size = std.math.max(block.len / 2, page_index);
-            while (sub_block_size > target_block_size) : (sub_block_size /= 2) {
+            var sub_block_size = std.math.min(block.len / 2, page_size);
+            while (sub_block_size >= target_block_size) : (sub_block_size /= 2) {
                 const node = try self.consumeUnusedNode();
 
                 var i = self.freeListIndex(sub_block_size);
@@ -134,7 +133,9 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         }
 
         fn padToBlockSize(self: *Self, memsize: usize) usize {
-            if (memsize <= self.page_size) {
+            if (memsize <= min_block_size) {
+                return min_block_size;
+            } else if (memsize <= self.page_size) {
                 return ceilPowerOfTwo(usize, memsize);
             } else {
                 return ceilToMultiple(page_size, memsize);
@@ -147,7 +148,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             } else if (memsize <= min_block_size) {
                 return self.free_lists.len - 1;
             } else {
-                return invBitsize(page_size * 2, memsize);
+                return invBitsize(page_size, memsize) + page_index;
             }
         }
 
@@ -196,13 +197,32 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             return sum;
         }
 
-        fn dump(self: *Self) void {
+        fn debugDump(self: *Self) void {
             std.debug.warn("unused: {}\n", self.unused_nodes.len);
             for (self.free_lists) |list, i| {
                 std.debug.warn("{}: {}\n", i, list.len);
             }
         }
     };
+}
+
+test "ZeeAlloc helpers" {
+    var buf: [0]u8 = undefined;
+    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
+    var zee_alloc = ZeeAllocDefaults.init(allocator);
+
+    @"freeListIndex": {
+        testing.expectEqual(usize(page_index), zee_alloc.freeListIndex(zee_alloc.page_size));
+        testing.expectEqual(usize(large_index), zee_alloc.freeListIndex(zee_alloc.page_size + 1));
+        testing.expectEqual(usize(page_index + 1), zee_alloc.freeListIndex(zee_alloc.page_size / 2));
+        testing.expectEqual(usize(page_index + 2), zee_alloc.freeListIndex(zee_alloc.page_size / 4));
+    }
+
+    @"padToBlockSize": {
+        testing.expectEqual(usize(zee_alloc.page_size), zee_alloc.padToBlockSize(zee_alloc.page_size));
+        testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToBlockSize(zee_alloc.page_size + 1));
+        testing.expectEqual(usize(3 * zee_alloc.page_size), zee_alloc.padToBlockSize(2 * zee_alloc.page_size + 1));
+    }
 }
 
 test "ZeeAlloc internals" {
@@ -217,11 +237,11 @@ test "ZeeAlloc internals" {
         const total_nodes = zee_alloc.totalNodes();
         testing.expect(total_nodes > 0);
         testing.expect(zee_alloc.unused_nodes.len > 0);
-        testing.expectEqual(zee_alloc.unused_nodes.len, total_nodes - 1);
-        zee_alloc.dump();
+        testing.expect(zee_alloc.unused_nodes.len < total_nodes);
+        zee_alloc.debugDump();
 
         var mem2 = zee_alloc.allocator.create(u8);
-        zee_alloc.dump();
+        zee_alloc.debugDump();
     }
 }
 
