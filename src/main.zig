@@ -1,7 +1,8 @@
 const std = @import("std");
+const linked_list = @import("linked_list.zig");
 const Allocator = std.mem.Allocator;
 
-const FreeList = std.LinkedList([]u8);
+const FreeList = linked_list.SinglyLinkedList([]u8);
 
 // export const wasm_allocator = &ZeeAllocDefaults.init(std.heap.wasm_allocator).allocator;
 export const fake_allocator = &ZeeAllocDefaults.init(&NoopAllocator).allocator;
@@ -71,10 +72,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
                 std.debug.assert(buffer.len > 0);
                 for (buffer) |*node| {
-                    self.unused_nodes.append(node);
+                    self.unused_nodes.prepend(node);
                 }
             }
-            return self.unused_nodes.pop() orelse unreachable;
+            return self.unused_nodes.popFirst() orelse unreachable;
         }
 
         fn allocBlock(self: *Self, memsize: usize) ![]u8 {
@@ -85,8 +86,9 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 var iter = self.free_lists[i].first;
                 while (iter) |node| : (iter = node.next) {
                     if (node.data.len == block_size) {
+                        // TODO: optimize using back ref
                         self.free_lists[i].remove(node);
-                        self.unused_nodes.append(node);
+                        self.unused_nodes.prepend(node);
                         return node.data;
                     }
                 }
@@ -109,7 +111,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
 
                 var i = self.freeListIndex(sub_block_size);
                 node.data = sub_block[sub_block_size..];
-                self.free_lists[i].append(node);
+                self.free_lists[i].prepend(node);
                 sub_block = sub_block[0..sub_block_size];
             }
             return sub_block[0..memsize];
@@ -124,7 +126,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                     // Need to bump this back to the fixed block
                     // We're not storing this metadata; let's hope we did everything right!
                     aNode.data = old_mem.ptr[0..block_size];
-                    self.free_lists[i].append(aNode);
+                    self.free_lists[i].prepend(aNode);
                 }
             }
 
@@ -154,7 +156,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         fn consumeLessImportantNode(self: *Self, target_index: usize) ?*FreeList.Node {
             var i = self.free_lists.len - 1;
             while (i > target_index) : (i -= 1) {
-                if (self.free_lists[i].pop()) |node| {
+                if (self.free_lists[i].popFirst()) |node| {
                     //std.debug.warn("ZeeAlloc: using free_lists[{}]\n", i);
                     return node;
                 }
@@ -190,18 +192,31 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             }
         }
 
-        fn totalNodes(self: *Self) usize {
-            var sum = self.unused_nodes.len;
-            for (self.free_lists) |list| {
-                sum += list.len;
+        fn debugCount(self: *Self, free_list: FreeList) usize {
+            var count = usize(0);
+            var iter = free_list.first;
+            while (iter) |node| : (iter = node.next) {
+                count += 1;
             }
-            return sum;
+            return count;
+        }
+
+        fn debugCountUnused(self: *Self) usize {
+            return self.debugCount(self.unused_nodes);
+        }
+
+        fn debugCountAll(self: *Self) usize {
+            var count = self.debugCountUnused();
+            for (self.free_lists) |list| {
+                count += self.debugCount(list);
+            }
+            return count;
         }
 
         fn debugDump(self: *Self) void {
-            std.debug.warn("unused: {}\n", self.unused_nodes.len);
+            std.debug.warn("unused: {}\n", self.debugCount(self.unused_nodes));
             for (self.free_lists) |list, i| {
-                std.debug.warn("{}: {}\n", i, list.len);
+                std.debug.warn("{}: {}\n", i, self.debugCount(list));
             }
         }
     };
@@ -235,17 +250,17 @@ test "ZeeAlloc internals" {
     var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
     var zee_alloc = ZeeAllocDefaults.init(allocator);
 
-    testing.expectEqual(zee_alloc.totalNodes(), 0);
+    testing.expectEqual(zee_alloc.debugCountAll(), 0);
 
     @"node count makes sense": {
         var mem = zee_alloc.allocator.create(u8);
-        const total_nodes = zee_alloc.totalNodes();
+        const total_nodes = zee_alloc.debugCountAll();
         testing.expect(total_nodes > 0);
-        testing.expect(zee_alloc.unused_nodes.len > 0);
-        testing.expect(zee_alloc.unused_nodes.len < total_nodes);
+        testing.expect(zee_alloc.debugCountUnused() > 0);
+        testing.expect(zee_alloc.debugCountUnused() < total_nodes);
 
         var mem2 = zee_alloc.allocator.create(u8);
-        testing.expectEqual(total_nodes, zee_alloc.totalNodes());
+        testing.expectEqual(total_nodes, zee_alloc.debugCountAll());
     }
 }
 
