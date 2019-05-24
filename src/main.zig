@@ -84,11 +84,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
 
             while (true) : (block_size *= 2) {
                 var i = self.freeListIndex(block_size);
-                var free_list = self.free_lists[i];
-                var it = free_list.first;
-                while (it) |node| : (it = node.next) {
+                var iter = self.free_lists[i].first;
+                while (iter) |node| : (iter = node.next) {
                     if (node.data.len == block_size) {
-                        free_list.remove(node);
+                        self.free_lists[i].remove(node);
                         self.unused_nodes.append(node);
                         return node.data;
                     }
@@ -171,8 +170,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 const self = @fieldParentPtr(Self, "allocator", allocator);
                 const block = try self.allocBlock(new_size);
                 const result = try self.extractFromBlock(block, new_size);
-                std.mem.copy(u8, result, old_mem);
-                _ = self.free(old_mem);
+                if (old_mem.len > 0) {
+                    std.mem.copy(u8, result, old_mem);
+                    _ = self.free(old_mem);
+                }
                 return result[0..new_size];
             }
         }
@@ -238,10 +239,9 @@ test "ZeeAlloc internals" {
         testing.expect(total_nodes > 0);
         testing.expect(zee_alloc.unused_nodes.len > 0);
         testing.expect(zee_alloc.unused_nodes.len < total_nodes);
-        zee_alloc.debugDump();
 
         var mem2 = zee_alloc.allocator.create(u8);
-        zee_alloc.debugDump();
+        testing.expectEqual(total_nodes, zee_alloc.totalNodes());
     }
 }
 
