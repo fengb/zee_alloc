@@ -212,25 +212,6 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
 // https://github.com/ziglang/zig/issues/2291
 extern fn @"llvm.wasm.memory.size.i32"(u32) u32;
 extern fn @"llvm.wasm.memory.grow.i32"(u32, u32) i32;
-comptime {
-    if (builtin.arch == .wasm32) {
-        @export("malloc", wasm_malloc, .Strong);
-        @export("free", wasm_free, .Strong);
-    }
-}
-
-extern fn wasm_malloc(size: usize) ?[*]u8 {
-    var result = wasm_allocator.alloc(u8, size) catch {
-        return null;
-    };
-    return @ptrCast([*]u8, &result[0]);
-}
-
-extern fn wasm_free(ptr: [*]u8) void {
-    // TODO: can't free without metadata
-    wasm_allocator.free(ptr[0..4]); // Make something up to prevent "unreachable" optimization
-}
-
 pub const wasm_allocator = init: {
     if (builtin.arch != .wasm32) {
         @compileError("WasmAllocator is only available for wasm32 arch");
