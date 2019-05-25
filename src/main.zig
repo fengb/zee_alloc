@@ -1,22 +1,9 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const linked_list = @import("linked_list.zig");
 const Allocator = std.mem.Allocator;
 
 const FreeList = linked_list.SinglyLinkedList([]u8);
-
-// export const wasm_allocator = &ZeeAllocDefaults.init(std.heap.wasm_allocator).allocator;
-export const fake_allocator = &ZeeAllocDefaults.init(&NoopAllocator).allocator;
-
-fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
-    return old_mem;
-}
-fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
-    return old_mem;
-}
-var NoopAllocator = Allocator{
-    .reallocFn = realloc,
-    .shrinkFn = shrink,
-};
 
 const large_index = 0;
 const page_index = 1;
@@ -221,6 +208,89 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         }
     };
 }
+
+// https://github.com/ziglang/zig/issues/2291
+extern fn @"llvm.wasm.memory.size.i32"(u32) u32;
+extern fn @"llvm.wasm.memory.grow.i32"(u32, u32) i32;
+comptime {
+    if (builtin.arch == .wasm32) {
+        @export("malloc", wasm_malloc, .Strong);
+        @export("free", wasm_free, .Strong);
+    }
+}
+
+extern fn wasm_malloc(size: usize) ?[*]u8 {
+    var result = wasm_allocator.alloc(u8, size) catch {
+        return null;
+    };
+    return @ptrCast([*]u8, &result[0]);
+}
+
+extern fn wasm_free(ptr: [*]u8) void {
+    // TODO: can't free without metadata
+    wasm_allocator.free(ptr[0..4]); // Make something up to prevent "unreachable" optimization
+}
+
+pub const wasm_allocator = init: {
+    if (builtin.arch != .wasm32) {
+        @compileError("WasmAllocator is only available for wasm32 arch");
+    }
+
+    // std.heap.wasm_allocator is designed for arbitrary sizing
+    // We only need page sizing, and this lets us stay super small
+    const WasmPageAllocator = struct {
+        const Self = @This();
+
+        start_ptr: [*]u8,
+        mem_tail: usize,
+        allocator: Allocator,
+
+        fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
+            if (old_mem.len > 0) {
+                unreachable; // Shouldn't be actually reallocating
+            } else if (new_size % std.os.page_size != 0) {
+                unreachable; // Should only be allocating page size chunks
+            } else {
+                // TODO: assert alignment
+            }
+
+            const self = @fieldParentPtr(Self, "allocator", allocator);
+            if (self.mem_tail == 0) {
+                self.start_ptr = @intToPtr([*]u8, @intCast(usize, @"llvm.wasm.memory.size.i32"(0)) * std.os.page_size);
+            }
+
+            const requested_page_count = @intCast(u32, new_size / std.os.page_size);
+            const prev_page_count = @"llvm.wasm.memory.grow.i32"(0, requested_page_count);
+            if (prev_page_count < 0) {
+                return error.OutOfMemory;
+            }
+
+            var result = self.start_ptr[self.mem_tail..(self.mem_tail + new_size)];
+            self.mem_tail += new_size;
+            return result;
+        }
+
+        fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
+            unreachable; // Shouldn't be shrinking / freeing
+        }
+
+        pub fn init() Self {
+            return Self{
+                .start_ptr = undefined,
+                .mem_tail = 0,
+
+                .allocator = Allocator{
+                    .reallocFn = realloc,
+                    .shrinkFn = shrink,
+                },
+            };
+        }
+    };
+
+    var wasm_page_allocator = WasmPageAllocator.init();
+    var zee_allocator = ZeeAllocDefaults.init(&wasm_page_allocator.allocator);
+    break :init &zee_allocator.allocator;
+};
 
 // Tests
 
