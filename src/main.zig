@@ -56,7 +56,13 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
 
         fn consumeUnusedNode(self: *Self) !*FreeList.Node {
             if (self.unused_nodes.first == null) {
-                var buffer = try self.backing_allocator.alloc(FreeList.Node, self.page_size / @sizeOf(FreeList.Node));
+                var bytes = try self.backing_allocator.alignedAlloc(u8, page_size, self.page_size);
+                const node_memsize = bytes.len - (bytes.len % @sizeOf(FreeList.Node));
+
+                // Small leak due to misalignment. Can't do anything about it...
+                bytes = bytes[0..node_memsize];
+                const buffer = @bytesToSlice(FreeList.Node, bytes);
+
                 std.debug.assert(buffer.len > 0);
                 for (buffer) |*node| {
                     self.unused_nodes.prepend(node);
