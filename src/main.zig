@@ -26,6 +26,11 @@ fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
     return value + (target - remainder) % target;
 }
 
+fn isAligned(addr: usize, alignment: u29) bool {
+    const mask = alignment - 1;
+    return mask & addr == 0;
+}
+
 pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type {
     const size_buckets = invBitsize(page_size, min_block_size) + 2; // large + page = 2 additional slots
 
@@ -71,14 +76,14 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             return self.unused_nodes.popFirst() orelse unreachable;
         }
 
-        fn allocBlock(self: *Self, memsize: usize) ![]u8 {
+        fn allocBlock(self: *Self, memsize: usize, alignment: u29) ![]u8 {
             var block_size = self.padToBlockSize(memsize);
 
             while (true) : (block_size *= 2) {
                 var i = self.freeListIndex(block_size);
                 var iter = self.free_lists[i].first;
                 while (iter) |node| : (iter = node.next) {
-                    if (node.data.len == block_size) {
+                    if (node.data.len == block_size and isAligned(@ptrToInt(node.data.ptr), alignment)) {
                         // TODO: optimize using back ref
                         self.free_lists[i].remove(node);
                         self.unused_nodes.prepend(node);
@@ -87,7 +92,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 }
 
                 if (i <= page_index) {
-                    return self.backing_allocator.alloc(u8, block_size);
+                    return try self.backing_allocator.alignedAlloc(u8, page_size, block_size);
                 }
             }
         }
@@ -159,12 +164,14 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         }
 
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
-            if (new_size <= old_mem.len and new_align <= new_size) {
+            if (new_align > page_size) {
+                return error.OutOfMemory;
+            } else if (new_size <= old_mem.len and new_align <= new_size) {
                 return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
 
-                const block = try self.allocBlock(new_size);
+                const block = try self.allocBlock(new_size, new_align);
                 const result = try self.extractFromBlock(block, new_size);
 
                 std.mem.copy(u8, result, old_mem);
@@ -237,8 +244,8 @@ pub const wasm_allocator = init: {
                 unreachable; // Shouldn't be actually reallocating
             } else if (new_size % std.os.page_size != 0) {
                 unreachable; // Should only be allocating page size chunks
-            } else {
-                // TODO: assert alignment
+            } else if (new_align != std.os.page_size) {
+                unreachable; // Should only align to page_size
             }
 
             const self = @fieldParentPtr(Self, "allocator", allocator);
@@ -351,10 +358,100 @@ fn testAllocator(allocator: *std.mem.Allocator) !void {
     allocator.free(slice);
 }
 
+fn testAllocatorAligned(allocator: *Allocator, comptime alignment: u29) !void {
+    // initial
+    var slice = try allocator.alignedAlloc(u8, alignment, 10);
+    testing.expectEqual(slice.len, 10);
+    // grow
+    slice = try allocator.realloc(slice, 100);
+    testing.expectEqual(slice.len, 100);
+    // shrink
+    slice = allocator.shrink(slice, 10);
+    testing.expectEqual(slice.len, 10);
+    // go to zero
+    slice = allocator.shrink(slice, 0);
+    testing.expectEqual(slice.len, 0);
+    // realloc from zero
+    slice = try allocator.realloc(slice, 100);
+    testing.expectEqual(slice.len, 100);
+    // shrink with shrink
+    slice = allocator.shrink(slice, 10);
+    testing.expectEqual(slice.len, 10);
+    // shrink to zero
+    slice = allocator.shrink(slice, 0);
+    testing.expectEqual(slice.len, 0);
+}
+
+fn testAllocatorLargeAlignment(allocator: *Allocator) Allocator.Error!void {
+    //Maybe a platform's page_size is actually the same as or
+    //  very near usize?
+
+    // TODO: support ultra wide alignment
+    //if (std.os.page_size << 2 > std.math.maxInt(usize)) return;
+
+    //const USizeShift = @IntType(false, std.math.log2(usize.bit_count));
+    //const large_align = u29(std.os.page_size << 2);
+    const USizeShift = @IntType(false, std.math.log2(usize.bit_count));
+    const large_align = u29(std.os.page_size);
+
+    var align_mask: usize = undefined;
+    _ = @shlWithOverflow(usize, ~usize(0), USizeShift(@ctz(large_align)), &align_mask);
+
+    var slice = try allocator.alignedAlloc(u8, large_align, 500);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = allocator.shrink(slice, 100);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = try allocator.realloc(slice, 5000);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = allocator.shrink(slice, 10);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = try allocator.realloc(slice, 20000);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    allocator.free(slice);
+}
+
+fn testAllocatorAlignedShrink(allocator: *Allocator) Allocator.Error!void {
+    var debug_buffer: [1000]u8 = undefined;
+    const debug_allocator = &std.heap.FixedBufferAllocator.init(&debug_buffer).allocator;
+
+    const alloc_size = std.os.page_size * 2 + 50;
+    var slice = try allocator.alignedAlloc(u8, 16, alloc_size);
+    defer allocator.free(slice);
+
+    var stuff_to_free = std.ArrayList([]align(16) u8).init(debug_allocator);
+    // On Windows, VirtualAlloc returns addresses aligned to a 64K boundary,
+    // which is 16 pages, hence the 32. This test may require to increase
+    // the size of the allocations feeding the `allocator` parameter if they
+    // fail, because of this high over-alignment we want to have.
+    while (@ptrToInt(slice.ptr) == std.mem.alignForward(@ptrToInt(slice.ptr), std.os.page_size * 32)) {
+        try stuff_to_free.append(slice);
+        slice = try allocator.alignedAlloc(u8, 16, alloc_size);
+    }
+    while (stuff_to_free.popOrNull()) |item| {
+        allocator.free(item);
+    }
+    slice[0] = 0x12;
+    slice[60] = 0x34;
+
+    // realloc to a smaller size but with a larger alignment
+    // TODO: currently not supported
+    // slice = try allocator.alignedRealloc(slice, std.os.page_size, alloc_size / 2);
+    // testing.expectEqual(slice[0], 0x12);
+    // testing.expectEqual(slice[60], 0x34);
+}
+
 test "ZeeAlloc with FixedBufferAllocator" {
     var buf: [1000000]u8 = undefined;
     var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
     var zee_alloc = ZeeAllocDefaults.init(allocator);
 
     try testAllocator(&zee_alloc.allocator);
+    try testAllocatorAligned(&zee_alloc.allocator, 16);
+    try testAllocatorLargeAlignment(&zee_alloc.allocator);
+    try testAllocatorAlignedShrink(&zee_alloc.allocator);
 }
