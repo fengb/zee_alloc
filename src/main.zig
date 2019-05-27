@@ -18,7 +18,7 @@ fn invBitsize(ref: usize, target: usize) usize {
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
     if (value <= 2) return value;
     const Shift = comptime std.math.Log2Int(T);
-    return T(1) << @intCast(Shift, T.bit_count - @clz(value - 1));
+    return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
 }
 
 fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
@@ -395,7 +395,7 @@ fn testAllocatorLargeAlignment(allocator: *Allocator) Allocator.Error!void {
     const large_align = u29(std.os.page_size);
 
     var align_mask: usize = undefined;
-    _ = @shlWithOverflow(usize, ~usize(0), USizeShift(@ctz(large_align)), &align_mask);
+    _ = @shlWithOverflow(usize, ~usize(0), USizeShift(@ctz(usize, large_align)), &align_mask);
 
     var slice = try allocator.alignedAlloc(u8, large_align, 500);
     testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
