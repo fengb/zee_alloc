@@ -81,11 +81,21 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
 
             while (true) : (block_size *= 2) {
                 var i = self.freeListIndex(block_size);
+
+                var prev: ?*FreeList.Node = null;
                 var iter = self.free_lists[i].first;
-                while (iter) |node| : (iter = node.next) {
+                while (iter) |node| : ({
+                    prev = iter;
+                    iter = node.next;
+                }) {
                     if (node.data.len == block_size and isAligned(@ptrToInt(node.data.ptr), alignment)) {
-                        // TODO: optimize using back ref
-                        self.free_lists[i].remove(node);
+                        if (prev != null) {
+                            const removed = prev.?.removeNext();
+                            std.debug.assert(removed == node);
+                        } else {
+                            const popped = self.free_lists[i].popFirst();
+                            std.debug.assert(popped == node);
+                        }
                         self.unused_nodes.prepend(node);
                         return node.data;
                     }
