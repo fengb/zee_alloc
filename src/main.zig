@@ -104,7 +104,15 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             }
         }
 
+        fn realignToBlock(self: *Self, mem: []u8) []u8 {
+            // Need to expand this back to the allocated block
+            // We're not storing this metadata; let's hope we did everything right!
+            var block_size = self.padToBlockSize(mem.len);
+            return mem.ptr[0..block_size];
+        }
+
         fn extractFromBlock(self: *Self, block: []u8, memsize: usize) ![]u8 {
+            std.debug.assert(block.len == self.padToBlockSize(block.len));
             std.debug.assert(memsize <= block.len);
 
             const target_block_size = self.padToBlockSize(memsize);
@@ -128,9 +136,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
                 const i = self.freeListIndex(block_size);
                 const node = self.consumeUnusedNode() catch self.consumeLessImportantNode(std.math.max(i, page_index));
                 if (node) |aNode| {
-                    // Need to bump this back to the fixed block
-                    // We're not storing this metadata; let's hope we did everything right!
-                    aNode.data = old_mem.ptr[0..block_size];
+                    aNode.data = self.realignToBlock(old_mem);
                     self.free_lists[i].prepend(aNode);
                 }
             }
@@ -192,8 +198,10 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             const self = @fieldParentPtr(Self, "allocator", allocator);
             if (new_size == 0) {
                 return self.free(old_mem);
+            } else if (old_mem.len <= self.padToBlockSize(new_size)) {
+                return old_mem[0..new_size];
             } else {
-                return self.extractFromBlock(old_mem, new_size) catch |err| switch (err) {
+                return self.extractFromBlock(self.realignToBlock(old_mem), new_size) catch |err| switch (err) {
                     // TODO: memory leak
                     error.OutOfMemory => old_mem[0..new_size],
                 };
@@ -305,7 +313,6 @@ test "ZeeAlloc helpers" {
 
     @"freeListIndex": {
         testing.expectEqual(usize(page_index), zee_alloc.freeListIndex(zee_alloc.page_size));
-        testing.expectEqual(usize(large_index), zee_alloc.freeListIndex(zee_alloc.page_size + 1));
         testing.expectEqual(usize(page_index + 1), zee_alloc.freeListIndex(zee_alloc.page_size / 2));
         testing.expectEqual(usize(page_index + 2), zee_alloc.freeListIndex(zee_alloc.page_size / 4));
     }
@@ -313,6 +320,7 @@ test "ZeeAlloc helpers" {
     @"padToBlockSize": {
         testing.expectEqual(usize(zee_alloc.page_size), zee_alloc.padToBlockSize(zee_alloc.page_size));
         testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToBlockSize(zee_alloc.page_size + 1));
+        testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToBlockSize(2 * zee_alloc.page_size));
         testing.expectEqual(usize(3 * zee_alloc.page_size), zee_alloc.padToBlockSize(2 * zee_alloc.page_size + 1));
     }
 }
