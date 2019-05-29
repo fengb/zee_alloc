@@ -5,7 +5,7 @@ const Allocator = std.mem.Allocator;
 
 const FreeList = linked_list.SinglyLinkedList([]u8);
 
-const large_index = 0;
+const oversized_index = 0;
 const page_index = 1;
 
 pub const ZeeAllocDefaults = ZeeAlloc(std.os.page_size, 4);
@@ -29,7 +29,7 @@ fn isAligned(addr: usize, alignment: u29) bool {
 
 pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type {
     const inv_bitsize_ref = page_index + std.math.log2_int(usize, page_size);
-    const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_block_size) + 1; // + 1 large blocks
+    const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_block_size) + 1; // + 1 oversized list
 
     return struct {
         const Self = @This();
@@ -157,7 +157,7 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
         fn freeListIndex(self: *Self, block_size: usize) usize {
             std.debug.assert(block_size == self.padToBlockSize(block_size));
             if (block_size > self.page_size) {
-                return large_index;
+                return oversized_index;
             } else if (block_size <= min_block_size) {
                 return self.free_lists.len - 1;
             } else {
@@ -402,7 +402,7 @@ fn testAllocatorLargeAlignment(allocator: *Allocator) Allocator.Error!void {
     //Maybe a platform's page_size is actually the same as or
     //  very near usize?
 
-    // TODO: support ultra wide alignment
+    // TODO: support ultra wide alignment (bigger than page_size)
     //if (std.os.page_size << 2 > std.math.maxInt(usize)) return;
 
     //const USizeShift = @IntType(false, std.math.log2(usize.bit_count));
@@ -455,10 +455,9 @@ fn testAllocatorAlignedShrink(allocator: *Allocator) Allocator.Error!void {
     slice[60] = 0x34;
 
     // realloc to a smaller size but with a larger alignment
-    // TODO: currently not supported
-    // slice = try allocator.alignedRealloc(slice, std.os.page_size, alloc_size / 2);
-    // testing.expectEqual(slice[0], 0x12);
-    // testing.expectEqual(slice[60], 0x34);
+    slice = try allocator.alignedRealloc(slice, std.os.page_size, alloc_size / 2);
+    testing.expectEqual(slice[0], 0x12);
+    testing.expectEqual(slice[60], 0x34);
 }
 
 test "ZeeAlloc with FixedBufferAllocator" {
