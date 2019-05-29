@@ -10,10 +10,6 @@ const page_index = 1;
 
 pub const ZeeAllocDefaults = ZeeAlloc(std.os.page_size, 4);
 
-fn invBitsize(ref: usize, target: usize) usize {
-    return std.math.log2_int_ceil(usize, ref) - std.math.log2_int_ceil(usize, target);
-}
-
 // https://github.com/ziglang/zig/issues/2426
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
     if (value <= 2) return value;
@@ -32,7 +28,8 @@ fn isAligned(addr: usize, alignment: u29) bool {
 }
 
 pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type {
-    const size_buckets = invBitsize(page_size, min_block_size) + 2; // large + page = 2 additional slots
+    const inv_bitsize_ref = page_index + std.math.log2_int(usize, page_size);
+    const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_block_size) + 1; // + 1 large blocks
 
     return struct {
         const Self = @This();
@@ -151,13 +148,14 @@ pub fn ZeeAlloc(comptime page_size: usize, comptime min_block_size: usize) type 
             }
         }
 
-        fn freeListIndex(self: *Self, memsize: usize) usize {
-            if (memsize > self.page_size) {
-                return 0;
-            } else if (memsize <= min_block_size) {
+        fn freeListIndex(self: *Self, block_size: usize) usize {
+            std.debug.assert(block_size == self.padToBlockSize(block_size));
+            if (block_size > self.page_size) {
+                return large_index;
+            } else if (block_size <= min_block_size) {
                 return self.free_lists.len - 1;
             } else {
-                return invBitsize(page_size, memsize) + page_index;
+                return inv_bitsize_ref - std.math.log2_int(usize, block_size);
             }
         }
 
