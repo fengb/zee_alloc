@@ -456,13 +456,104 @@ fn testAllocatorAlignedShrink(allocator: *Allocator) Allocator.Error!void {
     testing.expectEqual(slice[60], 0x34);
 }
 
-test "ZeeAlloc with FixedBufferAllocator" {
-    var buf: [1000000]u8 = undefined;
-    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
-    var zee_alloc = ZeeAllocDefaults.init(allocator);
+test "ZeeAlloc with DirectAllocator" {
+    var direct_allocator = std.heap.DirectAllocator.init();
+    defer direct_allocator.deinit();
+
+    var zee_alloc = ZeeAllocDefaults.init(&direct_allocator.allocator);
 
     try testAllocator(&zee_alloc.allocator);
     try testAllocatorAligned(&zee_alloc.allocator, 16);
     try testAllocatorLargeAlignment(&zee_alloc.allocator);
     try testAllocatorAlignedShrink(&zee_alloc.allocator);
+}
+
+test "ZeeAlloc with FixedBufferAllocator" {
+    var buf: [1000000]u8 = undefined;
+    var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
+    var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
+
+    try testAllocator(&zee_alloc.allocator);
+    try testAllocatorAligned(&zee_alloc.allocator, 16);
+    try testAllocatorLargeAlignment(&zee_alloc.allocator);
+    try testAllocatorAlignedShrink(&zee_alloc.allocator);
+}
+
+const bench = @import("bench.zig");
+var test_buf: [1024 * 1024]u8 = undefined;
+test "gc.benchmark" {
+    try bench.benchmark(struct {
+        const Arg = struct {
+            num: usize,
+            size: usize,
+
+            fn benchAllocator(a: Arg, allocator: *Allocator, comptime free: bool) !void {
+                var i: usize = 0;
+                while (i < a.num) : (i += 1) {
+                    const bytes = try allocator.alloc(u8, a.size);
+                    defer if (free) allocator.free(bytes);
+                }
+            }
+        };
+
+        pub const args = []Arg{
+            Arg{ .num = 10 * 1, .size = 1024 * 1 },
+            Arg{ .num = 10 * 2, .size = 1024 * 1 },
+            Arg{ .num = 10 * 4, .size = 1024 * 1 },
+            Arg{ .num = 10 * 1, .size = 1024 * 2 },
+            Arg{ .num = 10 * 2, .size = 1024 * 2 },
+            Arg{ .num = 10 * 4, .size = 1024 * 2 },
+            Arg{ .num = 10 * 1, .size = 1024 * 4 },
+            Arg{ .num = 10 * 2, .size = 1024 * 4 },
+            Arg{ .num = 10 * 4, .size = 1024 * 4 },
+        };
+
+        pub const iterations = 10000;
+
+        pub fn FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            a.benchAllocator(&fba.allocator, false) catch unreachable;
+        }
+
+        pub fn Arena_FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            var arena = std.heap.ArenaAllocator.init(&fba.allocator);
+            defer arena.deinit();
+
+            a.benchAllocator(&arena.allocator, false) catch unreachable;
+        }
+
+        pub fn ZeeAlloc_FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            var zee_alloc = ZeeAllocDefaults.init(&fba.allocator);
+
+            a.benchAllocator(&zee_alloc.allocator, false) catch unreachable;
+        }
+
+        pub fn DirectAllocator(a: Arg) void {
+            var da = std.heap.DirectAllocator.init();
+            defer da.deinit();
+
+            a.benchAllocator(&da.allocator, true) catch unreachable;
+        }
+
+        pub fn Arena_DirectAllocator(a: Arg) void {
+            var da = std.heap.DirectAllocator.init();
+            defer da.deinit();
+
+            var arena = std.heap.ArenaAllocator.init(&da.allocator);
+            defer arena.deinit();
+
+            a.benchAllocator(&arena.allocator, false) catch unreachable;
+        }
+
+        pub fn ZeeAlloc_DirectAllocator(a: Arg) void {
+            var da = std.heap.DirectAllocator.init();
+            defer da.deinit();
+
+            var zee_alloc = ZeeAllocDefaults.init(&da.allocator);
+
+            a.benchAllocator(&zee_alloc.allocator, false) catch unreachable;
+        }
+    });
 }
