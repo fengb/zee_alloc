@@ -256,13 +256,9 @@ pub const wasm_allocator = init: {
         allocator: Allocator,
 
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
-            if (old_mem.len > 0) {
-                unreachable; // Shouldn't be actually reallocating
-            } else if (new_size % std.os.page_size != 0) {
-                unreachable; // Should only be allocating page size chunks
-            } else if (new_align != std.os.page_size) {
-                unreachable; // Should only align to page_size
-            }
+            std.debug.assert(old_mem.len == 0); // Shouldn't be actually reallocating
+            std.debug.assert(new_size % std.os.page_size == 0); // Should only be allocating page size chunks
+            std.debug.assert(new_align == std.os.page_size); // Should only align to page_size
 
             const self = @fieldParentPtr(Self, "allocator", allocator);
             if (self.mem_tail == 0) {
