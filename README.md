@@ -85,6 +85,9 @@ ZeeAlloc_FixedBufferAllocator.8                10091
 
 ### Architecture — [Buddy memory allocation](https://en.wikipedia.org/wiki/Buddy_memory_allocation)
 
+_Caveat: I (fengb) knew **nothing** about memory allocation when starting this
+project. Any semblence of competence is merely a coincidence._
+
 ```
 idx block_size
  0  >64K  oversized
