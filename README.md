@@ -6,7 +6,7 @@ This allocator has not been well tested. Use at your own peril.
 
 ### Goals
 
-_inspired by Rust's [wee_alloc](https://github.com/rustwasm/wee_alloc)_
+_(inspired by Rust's [wee_alloc](https://github.com/rustwasm/wee_alloc))_
 
 1. Tiny compiled output
 2. Tiny compiled output x2
@@ -18,7 +18,7 @@ _inspired by Rust's [wee_alloc](https://github.com/rustwasm/wee_alloc)_
 
 - Debugging — this library probably will never do a good job identifying errors.
   Zig has a great [debug allocator](https://github.com/andrewrk/zig-general-purpose-allocator)
-  in the works, and any program should be able to swap allocations
+  in the works, and zig programs should be able to easily swap allocators.
 - Compact memory — fixed allocation blocks are used for speed and simplicity.
   Memory usage will never be optimum unless the underlying algorithm completely changes
 
@@ -85,8 +85,8 @@ ZeeAlloc_FixedBufferAllocator.8                10091
 
 ### Architecture — [Buddy memory allocation](https://en.wikipedia.org/wiki/Buddy_memory_allocation)
 
-_Caveat: I (fengb) knew **nothing** about memory allocation when starting this
-project. Any semblence of competence is merely a coincidence._
+_Caveat: I knew **nothing** about memory allocation when starting this project.
+Any semblence of competence is merely a coincidence._
 
 ```
 idx block_size
@@ -107,14 +107,15 @@ idx block_size
 14     8
 15     4  smallest block
 
--- unused nodes
++ unused nodes
 ```
 
 Size order is reversed because 0 and 1 are special.  I believe counting down had
 slightly better semantics than counting up but I haven't actually tested it.
 
 Wasm only allows for allocating entire pages (64K) at a time. Current architecture is
-heavily influenced by this behavior.
+heavily influenced by this behavior. In a real OS, the page size is much smaller at 4K.
+Everything should work as expected even if it's not as efficient as possible.
 
 Upon initialization, we allocate an entire page for unused nodes (~5400). This is
 rather extreme and we should tune the first page to have some actual usage space.
@@ -124,16 +125,13 @@ bigger than necessary, we grab the smallest power of 2 we need and resize the re
 to toss back as free nodes. This is O(log k) which is O(1).
 
 For allocations >64K, we iterate through list 0 to find a matching size, O(n).
-Free oversized blocks are never used and divided by smaller allocations.
+Free oversized blocks are never divided into smaller allocations.
 
-This only supports alignment up to a page size — 64K in wasm.  This ought to be
-enough for anybody™.  Free nodes remember alignment but don't necessary preserve it,
-so subsequent aligned allocations might trigger extra page allocations.  Since we use
-the buddy system, blocks should be automatically aligned pretty well.
+ZeeAlloc only supports pointer alignment up to a page size — 64K in wasm.  This
+ought to be enough for anybody™.  Free nodes currently don't try to preserve alignment
+so they may be consumed by a division.  Since we use the buddy system, blocks are
+automatically aligned pretty well.
 
 Currently, when a block is allocated, it "disappears" from the allocator entirely
 and its node returns back to the "unused" pool.  In theory this is more efficient
 since we can get away with fewer nodes, but it also means we can't track allocations.
-
-In a real OS, the page size is much smaller at 4K. Everything should work as expected
-even if it's not as efficient as possible.
