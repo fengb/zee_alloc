@@ -99,7 +99,7 @@ const Node = struct {
 
     pub fn nextNode(self: Node) ?Node {
         const frame = self.next.* orelse return null;
-        return Node.cast(frame) catch unreachable;
+        return Node.castUnsafe(frame);
     }
 };
 
@@ -112,7 +112,7 @@ const FreeList = struct {
 
     pub fn firstNode(self: FreeList) ?Node {
         const frame = self.first orelse return null;
-        return Node.cast(frame) catch unreachable;
+        return Node.castUnsafe(frame);
     }
 
     pub fn prepend(self: *FreeList, node: Node) void {
