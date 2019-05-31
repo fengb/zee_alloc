@@ -236,13 +236,13 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
-            if (new_align > page_size) {
+            const self = @fieldParentPtr(Self, "allocator", allocator);
+            if (new_align > min_frame_size) {
                 return error.OutOfMemory;
             } else if (new_size <= old_mem.len) {
-                return shrink(allocator, old_mem, old_align, new_size, new_align);
+                const node = Node.restore(old_mem.ptr) catch unreachable;
+                return self.asMinimumData(node, new_size);
             } else {
-                const self = @fieldParentPtr(Self, "allocator", allocator);
-
                 const frame_size = self.padToFrameSize(new_size);
                 const node = self.findFreeNode(frame_size) orelse try self.allocNode(frame_size);
 
