@@ -3,12 +3,15 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const Frame = @OpaqueType();
-// Memory layout (mirrored in Node):
-//     next: *Frame
-//     payload_size: usize
-//     payload: [n]u8
 
-const meta_size = @sizeOf(*Frame) + @sizeOf(usize);
+// Synthetic representation -- we can't embed arbitrarily sized arrays in a struct
+const FrameLayout = struct {
+    frame_size: usize,
+    next: ?*Frame,
+    payload: []u8,
+};
+
+const meta_size = @byteOffsetOf(FrameLayout, "payload");
 pub const min_frame_size = ceilPowerOfTwo(usize, meta_size + 1);
 pub const min_payload_size = min_frame_size - meta_size;
 
@@ -24,35 +27,71 @@ fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
     return value + (target - remainder) % target;
 }
 
+fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
+    return memsize > 0 and
+        (memsize % page_size == 0 or memsize == ceilPowerOfTwo(usize, memsize));
+}
+
 const Node = packed struct {
+    frame: *Frame,
+    // Mirroring FrameLayout
+    frame_size: *usize,
     next: *?*Frame,
-    payload_size: *usize,
     payload: [*]u8,
 
     pub fn init(raw_bytes: []u8) Node {
-        const node = Node.cast(@ptrCast(*Frame, raw_bytes.ptr));
+        const node = Node.castUnsafe(@ptrCast(*Frame, raw_bytes.ptr));
+        node.frame_size.* = raw_bytes.len;
         node.next.* = null;
-        node.payload_size.* = raw_bytes.len - meta_size;
         return node;
     }
 
-    pub fn cast(frame: *Frame) Node {
+    fn castUnsafe(frame: *Frame) Node {
         // Here be dragons
         const base_addr = @ptrToInt(frame);
+        std.debug.assert(base_addr % 8 == 0);
+
         return Node{
-            .next = @intToPtr(*?*Frame, base_addr + @byteOffsetOf(Node, "next")),
-            .payload_size = @intToPtr(*usize, base_addr + @byteOffsetOf(Node, "payload_size")),
-            .payload = @intToPtr([*]u8, base_addr + @byteOffsetOf(Node, "payload")),
+            .frame = frame,
+            .frame_size = @intToPtr(*usize, base_addr + @byteOffsetOf(FrameLayout, "frame_size")),
+            .next = @intToPtr(*?*Frame, base_addr + @byteOffsetOf(FrameLayout, "next")),
+            .payload = @intToPtr([*]u8, base_addr + @byteOffsetOf(FrameLayout, "payload")),
         };
+    }
+
+    pub fn cast(frame: *Frame) !Node {
+        const node = castUnsafe(frame);
+        if (node.frame_size.* < 4) {
+            return error.UnalignedMemory;
+        }
+        return node;
+    }
+
+    pub fn restore(payload: [*]u8) !Node {
+        const node = try Node.cast(@ptrCast(*Frame, payload - @byteOffsetOf(FrameLayout, "payload")));
+        return node;
+    }
+
+    pub fn payloadSize(self: Node) usize {
+        return self.frame_size.* - meta_size;
     }
 
     pub fn toSlice(self: Node, target_size: usize) []u8 {
         return self.payload[0..target_size];
     }
 
+    pub fn frameMeta(self: Node) FrameMeta {
+        return FrameMeta{
+            .frame = self.frame,
+            .frame_size = self.frame_size.*,
+            .next = self.next.*,
+            .payload = []u8{},
+        };
+    }
+
     pub fn nextNode(self: Node) ?Node {
-        if (self.next) |frame| {
-            return Node.initRaw(frame);
+        if (self.next.*) |frame| {
+            return Node.cast(frame);
         } else {
             return null;
         }
@@ -70,6 +109,11 @@ const FreeList = struct {
 
     pub fn init() FreeList {
         return FreeList{ .first = null };
+    }
+
+    pub fn prepend(self: *FreeList, node: Node) void {
+        node.next.* = self.first;
+        self.first = node.frame;
     }
 };
 
@@ -115,17 +159,31 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
-            // Actually return to a freelist
+            const node = Node.restore(old_mem.ptr) catch unreachable;
+            const i = self.freeListIndex(node.frame_size.*);
+            self.free_lists[i].prepend(node);
             return old_mem[0..0];
         }
 
-        fn padToPayloadSize(self: *Self, memsize: usize) usize {
-            if (memsize <= min_payload_size) {
-                return min_payload_size;
-            } else if (memsize <= page_size) {
-                return ceilPowerOfTwo(usize, memsize);
+        fn padToFrameSize(self: *Self, memsize: usize) usize {
+            const meta_memsize = memsize + meta_size;
+            if (meta_memsize <= min_frame_size) {
+                return min_frame_size;
+            } else if (meta_memsize <= page_size) {
+                return ceilPowerOfTwo(usize, meta_memsize);
             } else {
-                return ceilToMultiple(page_size, memsize);
+                return ceilToMultiple(page_size, meta_memsize);
+            }
+        }
+
+        fn freeListIndex(self: *Self, frame_size: usize) usize {
+            std.debug.assert(isFrameSize(frame_size, page_size));
+            if (frame_size > page_size) {
+                return oversized_index;
+            } else if (frame_size <= min_frame_size) {
+                return self.free_lists.len - 1;
+            } else {
+                return inv_bitsize_ref - std.math.log2_int(usize, frame_size);
             }
         }
 
@@ -137,14 +195,16 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
 
-                const payload_size = self.padToPayloadSize(new_size);
-                const node = self.findFreeNode(payload_size) orelse
-                    try self.allocNode(payload_size);
+                const frame_size = self.padToFrameSize(new_size);
+                const node = self.findFreeNode(frame_size) orelse
+                    try self.allocNode(frame_size);
 
                 const result = self.asMinimumData(node, new_size);
 
-                std.mem.copy(u8, result, old_mem);
-                _ = self.free(old_mem);
+                if (old_mem.len > 0) {
+                    std.mem.copy(u8, result, old_mem);
+                    _ = self.free(old_mem);
+                }
                 return result[0..new_size];
             }
         }
