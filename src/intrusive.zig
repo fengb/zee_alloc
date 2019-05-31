@@ -76,8 +76,10 @@ const Node = packed struct {
         return self.frame_size.* - meta_size;
     }
 
-    pub fn toSlice(self: Node, target_size: usize) []u8 {
-        return self.payload[0..target_size];
+    pub fn toSlice(self: Node, start: usize, end: usize) []u8 {
+        std.debug.assert(start <= end);
+        std.debug.assert(end <= self.payloadSize());
+        return self.payload[start..end];
     }
 
     pub fn frameMeta(self: Node) FrameMeta {
@@ -187,7 +189,21 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn asMinimumData(self: *Self, node: Node, target_size: usize) []u8 {
-            return node.toSlice(target_size);
+            std.debug.assert(target_size <= node.payloadSize());
+
+            const target_frame_size = self.padToFrameSize(target_size);
+
+            var sub_frame_size = std.math.min(node.frame_size.* / 2, page_size);
+            while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
+                var i = self.freeListIndex(sub_frame_size);
+                const start = node.payloadSize() - sub_frame_size;
+                const sub_frame_data = node.toSlice(start, node.payloadSize());
+                const sub_node = Node.init(sub_frame_data);
+                self.free_lists[i].prepend(sub_node);
+                node.frame_size.* = sub_frame_size;
+            }
+
+            return node.toSlice(0, target_size);
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
@@ -223,14 +239,12 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             if (new_align > page_size) {
                 return error.OutOfMemory;
             } else if (new_size <= old_mem.len) {
-                return error.OutOfMemory;
-                // return shrink(allocator, old_mem, old_align, new_size, new_align);
+                return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
 
                 const frame_size = self.padToFrameSize(new_size);
-                const node = self.findFreeNode(frame_size) orelse
-                    try self.allocNode(frame_size);
+                const node = self.findFreeNode(frame_size) orelse try self.allocNode(frame_size);
 
                 const result = self.asMinimumData(node, new_size);
 
@@ -247,7 +261,8 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             if (new_size == 0) {
                 return self.free(old_mem);
             } else {
-                return old_mem[0..new_size];
+                const node = Node.restore(old_mem.ptr) catch unreachable;
+                return self.asMinimumData(node, new_size);
             }
         }
     };
