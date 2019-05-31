@@ -237,9 +237,9 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             }
         }
 
-        fn debugCount(self: *Self, free_list: FreeList) usize {
+        fn debugCount(self: *Self, index: usize) usize {
             var count = usize(0);
-            var iter = free_list.first;
+            var iter = self.free_lists[index].first;
             while (iter) |node| : (iter = node.next) {
                 count += 1;
             }
@@ -248,15 +248,15 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         fn debugCountAll(self: *Self) usize {
             var count = usize(0);
-            for (self.free_lists) |list| {
-                count += self.debugCount(list);
+            for (self.free_lists) |_, i| {
+                count += self.debugCount(i);
             }
             return count;
         }
 
         fn debugDump(self: *Self) void {
-            for (self.free_lists) |list, i| {
-                std.debug.warn("{}: {}\n", i, self.debugCount(list));
+            for (self.free_lists) |_, i| {
+                std.debug.warn("{}: {}\n", i, self.debugCount(i));
             }
         }
     };
@@ -342,6 +342,34 @@ test "ZeeAlloc helpers" {
         testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToFrameSize(zee_alloc.page_size));
         testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToFrameSize(zee_alloc.page_size - meta_size + 1));
         testing.expectEqual(usize(3 * zee_alloc.page_size), zee_alloc.padToFrameSize(2 * zee_alloc.page_size));
+    }
+}
+
+test "ZeeAlloc internals" {
+    var buf: [1000000]u8 = undefined;
+    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
+    var zee_alloc = ZeeAllocDefaults.init(allocator);
+
+    testing.expectEqual(zee_alloc.debugCountAll(), 0);
+
+    @"node count makes sense": {
+        var small1 = try zee_alloc.allocator.create(u8);
+        var prev_free_nodes = zee_alloc.debugCountAll();
+        testing.expect(prev_free_nodes > 0);
+
+        var small2 = try zee_alloc.allocator.create(u8);
+        testing.expectEqual(prev_free_nodes - 1, zee_alloc.debugCountAll());
+        prev_free_nodes = zee_alloc.debugCountAll();
+
+        zee_alloc.allocator.destroy(small2);
+        testing.expectEqual(prev_free_nodes + 1, zee_alloc.debugCountAll());
+        prev_free_nodes = zee_alloc.debugCountAll();
+
+        var big1 = try zee_alloc.allocator.alloc(u8, 127 * 1024);
+        testing.expectEqual(prev_free_nodes, zee_alloc.debugCountAll());
+        zee_alloc.allocator.free(big1);
+        testing.expectEqual(prev_free_nodes + 1, zee_alloc.debugCountAll());
+        testing.expectEqual(usize(1), zee_alloc.debugCount(oversized_index));
     }
 }
 
@@ -459,23 +487,6 @@ fn testAllocatorAlignedShrink(allocator: *Allocator) Allocator.Error!void {
     slice = try allocator.alignedRealloc(slice, std.os.page_size, alloc_size / 2);
     testing.expectEqual(slice[0], 0x12);
     testing.expectEqual(slice[60], 0x34);
-}
-
-test "ZeeAlloc internals" {
-    var buf: [1000000]u8 = undefined;
-    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
-    var zee_alloc = ZeeAllocDefaults.init(allocator);
-
-    testing.expectEqual(zee_alloc.debugCountAll(), 0);
-
-    @"node count makes sense": {
-        var mem = zee_alloc.allocator.create(u8);
-        const free_nodes = zee_alloc.debugCountAll();
-        testing.expect(free_nodes > 0);
-
-        var mem2 = zee_alloc.allocator.create(u8);
-        testing.expect(zee_alloc.debugCountAll() < free_nodes);
-    }
 }
 
 test "ZeeAlloc with FixedBufferAllocator" {
