@@ -19,6 +19,11 @@ fn ceilPowerOfTwo(comptime T: type, value: T) T {
     return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
 }
 
+fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
+    const remainder = value % target;
+    return value + (target - remainder) % target;
+}
+
 const Node = packed struct {
     next: *?*Frame,
     payload_size: *usize,
@@ -33,11 +38,11 @@ const Node = packed struct {
 
     pub fn cast(frame: *Frame) Node {
         // Here be dragons
-        const addr = @ptrToInt(frame);
+        const base_addr = @ptrToInt(frame);
         return Node{
-            .next = @intToPtr(*?*Frame, addr + @byteOffsetOf(Node, "next")),
-            .payload_size = @intToPtr(*usize, addr + @byteOffsetOf(Node, "payload_size")),
-            .payload = @intToPtr([*]u8, addr + @byteOffsetOf(Node, "payload")),
+            .next = @intToPtr(*?*Frame, base_addr + @byteOffsetOf(Node, "next")),
+            .payload_size = @intToPtr(*usize, base_addr + @byteOffsetOf(Node, "payload_size")),
+            .payload = @intToPtr([*]u8, base_addr + @byteOffsetOf(Node, "payload")),
         };
     }
 
@@ -101,17 +106,27 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             return Node.init(rawData);
         }
 
-        fn findFreeNode(self: *Self, memsize: usize, alignment: u29) ?Node {
+        fn findFreeNode(self: *Self, memsize: usize) ?Node {
             return null;
         }
 
-        fn asMinimumPayload(self: *Self, node: Node, target_size: usize) []u8 {
+        fn asMinimumData(self: *Self, node: Node, target_size: usize) []u8 {
             return node.toSlice(target_size);
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
             // Actually return to a freelist
             return old_mem[0..0];
+        }
+
+        fn padToPayloadSize(self: *Self, memsize: usize) usize {
+            if (memsize <= min_payload_size) {
+                return min_payload_size;
+            } else if (memsize <= page_size) {
+                return ceilPowerOfTwo(usize, memsize);
+            } else {
+                return ceilToMultiple(page_size, memsize);
+            }
         }
 
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
@@ -122,10 +137,11 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
 
-                const node = self.findFreeNode(new_size, new_align) orelse
-                    try self.allocNode(new_size);
+                const payload_size = self.padToPayloadSize(new_size);
+                const node = self.findFreeNode(payload_size) orelse
+                    try self.allocNode(payload_size);
 
-                const result = self.asMinimumPayload(node, new_size);
+                const result = self.asMinimumData(node, new_size);
 
                 std.mem.copy(u8, result, old_mem);
                 _ = self.free(old_mem);
@@ -138,7 +154,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             if (new_size == 0) {
                 return self.free(old_mem);
             } else {
-                unreachable;
+                return old_mem[0..new_size];
             }
         }
     };
@@ -203,3 +219,43 @@ pub const wasm_allocator = init: {
     var zee_allocator = ZeeAllocDefaults.init(&wasm_page_allocator.allocator);
     break :init &zee_allocator.allocator;
 };
+
+// -- functional tests from std/heap.zig
+
+const testing = std.testing;
+
+fn testAllocator(allocator: *std.mem.Allocator) !void {
+    var slice = try allocator.alloc(*i32, 100);
+    testing.expectEqual(slice.len, 100);
+    for (slice) |*item, i| {
+        item.* = try allocator.create(i32);
+        item.*.* = @intCast(i32, i);
+    }
+
+    slice = try allocator.realloc(slice, 20000);
+    testing.expectEqual(slice.len, 20000);
+
+    for (slice[0..100]) |item, i| {
+        testing.expectEqual(item.*, @intCast(i32, i));
+        allocator.destroy(item);
+    }
+
+    slice = allocator.shrink(slice, 50);
+    testing.expectEqual(slice.len, 50);
+    slice = allocator.shrink(slice, 25);
+    testing.expectEqual(slice.len, 25);
+    slice = allocator.shrink(slice, 0);
+    testing.expectEqual(slice.len, 0);
+    slice = try allocator.realloc(slice, 10);
+    testing.expectEqual(slice.len, 10);
+
+    allocator.free(slice);
+}
+
+test "ZeeAlloc with FixedBufferAllocator" {
+    var buf: [1000000]u8 = undefined;
+    var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
+    var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
+
+    try testAllocator(&zee_alloc.allocator);
+}
