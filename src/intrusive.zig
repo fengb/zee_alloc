@@ -5,10 +5,10 @@ const Allocator = std.mem.Allocator;
 const Frame = @OpaqueType();
 
 // Synthetic representation -- we can't embed arbitrarily sized arrays in a struct
-const FrameLayout = struct {
+const FrameLayout = packed struct {
     frame_size: usize,
     next: ?*Frame,
-    payload: []u8,
+    payload: [1]u8,
 };
 
 const meta_size = @byteOffsetOf(FrameLayout, "payload");
@@ -32,7 +32,7 @@ fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
         (memsize % page_size == 0 or memsize == ceilPowerOfTwo(usize, memsize));
 }
 
-const Node = packed struct {
+const Node = struct {
     frame: *Frame,
     // Mirroring FrameLayout
     frame_size: *usize,
@@ -43,13 +43,13 @@ const Node = packed struct {
         const node = Node.castUnsafe(@ptrCast(*Frame, raw_bytes.ptr));
         node.frame_size.* = raw_bytes.len;
         node.next.* = null;
+        node.validate() catch unreachable;
         return node;
     }
 
     fn castUnsafe(frame: *Frame) Node {
         // Here be dragons
         const base_addr = @ptrToInt(frame);
-        std.debug.assert(base_addr % 8 == 0);
 
         return Node{
             .frame = frame,
@@ -61,15 +61,21 @@ const Node = packed struct {
 
     pub fn cast(frame: *Frame) !Node {
         const node = castUnsafe(frame);
-        if (node.frame_size.* < 4) {
-            return error.UnalignedMemory;
-        }
+        try node.validate();
         return node;
     }
 
     pub fn restore(payload: [*]u8) !Node {
-        const node = try Node.cast(@ptrCast(*Frame, payload - @byteOffsetOf(FrameLayout, "payload")));
-        return node;
+        return try Node.cast(@ptrCast(*Frame, payload - @byteOffsetOf(FrameLayout, "payload")));
+    }
+
+    pub fn validate(self: Node) !void {
+        if (@ptrToInt(self.frame) % min_frame_size != 0) {
+            return error.UnalignedMemory;
+        }
+        if (!isFrameSize(self.frame_size.*, std.os.page_size)) {
+            return error.UnalignedMemory;
+        }
     }
 
     pub fn payloadSize(self: Node) usize {
@@ -133,6 +139,8 @@ const page_index = 1;
 pub const ZeeAllocDefaults = ZeeAlloc(std.os.page_size);
 
 pub fn ZeeAlloc(comptime page_size: usize) type {
+    std.debug.assert(page_size >= std.os.page_size);
+
     const inv_bitsize_ref = page_index + std.math.log2_int(usize, page_size);
     const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 oversized list
 
