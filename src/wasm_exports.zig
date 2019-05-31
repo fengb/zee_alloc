@@ -1,5 +1,5 @@
 const builtin = @import("builtin");
-const zee_alloc = @import("intrusive.zig");
+const zee_alloc = @import("main.zig");
 
 export fn malloc(size: usize) ?[*]u8 {
     var result = zee_alloc.wasm_allocator.alloc(u8, size) catch return null;
