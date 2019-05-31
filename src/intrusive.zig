@@ -90,17 +90,8 @@ const Node = packed struct {
     }
 
     pub fn nextNode(self: Node) ?Node {
-        if (self.next.*) |frame| {
-            return Node.cast(frame);
-        } else {
-            return null;
-        }
-    }
-
-    pub fn removeNext(self: Node) ?*Frame {
-        const frame = self.next.*;
-        self.next.* = null;
-        return frame;
+        const frame = self.next.* orelse return null;
+        return Node.cast(frame) catch unreachable;
     }
 };
 
@@ -111,9 +102,26 @@ const FreeList = struct {
         return FreeList{ .first = null };
     }
 
+    pub fn firstNode(self: FreeList) ?Node {
+        const frame = self.first orelse return null;
+        return Node.cast(frame) catch unreachable;
+    }
+
     pub fn prepend(self: *FreeList, node: Node) void {
         node.next.* = self.first;
         self.first = node.frame;
+    }
+
+    pub fn removeAfter(self: *FreeList, ref: ?Node) ?*Frame {
+        const first_node = self.firstNode() orelse return null;
+        if (ref) |ref_node| {
+            const next_node = ref_node.nextNode() orelse return null;
+            ref_node.next.* = next_node.next.*;
+            return next_node.frame;
+        } else {
+            self.first = first_node.next.*;
+            return first_node.frame;
+        }
     }
 };
 
@@ -145,13 +153,37 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             };
         }
 
-        fn allocNode(self: *Self, size: usize) !Node {
-            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, size);
+        fn allocNode(self: *Self, frame_size: usize) !Node {
+            std.debug.assert(isFrameSize(frame_size, page_size));
+            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, frame_size);
             return Node.init(rawData);
         }
 
-        fn findFreeNode(self: *Self, memsize: usize) ?Node {
-            return null;
+        fn findFreeNode(self: *Self, frame_size: usize) ?Node {
+            std.debug.assert(isFrameSize(frame_size, page_size));
+
+            var search_size = frame_size;
+            while (true) : (search_size *= 2) {
+                var i = self.freeListIndex(search_size);
+
+                var free_list = &self.free_lists[i];
+                var prev: ?Node = null;
+                var iter = free_list.firstNode();
+                while (iter) |node| : ({
+                    prev = iter;
+                    iter = node.nextNode();
+                }) {
+                    if (node.frame_size.* == search_size) {
+                        const removed = free_list.removeAfter(prev);
+                        std.debug.assert(removed == node.frame);
+                        return node;
+                    }
+                }
+
+                if (i <= page_index) {
+                    return null;
+                }
+            }
         }
 
         fn asMinimumData(self: *Self, node: Node, target_size: usize) []u8 {
@@ -190,8 +222,9 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
             if (new_align > page_size) {
                 return error.OutOfMemory;
-            } else if (new_size <= old_mem.len and new_align <= new_size) {
-                return shrink(allocator, old_mem, old_align, new_size, new_align);
+            } else if (new_size <= old_mem.len) {
+                return error.OutOfMemory;
+                // return shrink(allocator, old_mem, old_align, new_size, new_align);
             } else {
                 const self = @fieldParentPtr(Self, "allocator", allocator);
 
