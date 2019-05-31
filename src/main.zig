@@ -2,16 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const Frame = @OpaqueType();
-
-// Synthetic representation -- we can't embed arbitrarily sized arrays in a struct
-const FrameLayout = packed struct {
-    frame_size: usize,
-    next: ?*Frame,
-    payload: [1]u8,
-};
-
-const meta_size = @byteOffsetOf(FrameLayout, "payload");
+const meta_size = @byteOffsetOf(FrameNode, "payload");
 pub const min_frame_size = ceilPowerOfTwo(usize, meta_size + 1);
 pub const min_payload_size = min_frame_size - meta_size;
 
@@ -32,103 +23,73 @@ fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
         (memsize % page_size == 0 or memsize == ceilPowerOfTwo(usize, memsize));
 }
 
-const Node = struct {
-    frame: *Frame,
-    // Mirroring FrameLayout
-    frame_size: *usize,
-    next: *?*Frame,
-    payload: [*]u8,
+// Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
+const FrameNode = packed struct {
+    frame_size: usize,
+    next: ?*FrameNode,
+    // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
+    payload: [@sizeOf(usize)]u8,
 
-    pub fn init(raw_bytes: []u8) Node {
-        const node = Node.castUnsafe(@ptrCast(*Frame, raw_bytes.ptr));
-        node.frame_size.* = raw_bytes.len;
-        node.next.* = null;
+    pub fn init(raw_bytes: []u8) *FrameNode {
+        const node = @ptrCast(*FrameNode, raw_bytes.ptr);
+        node.frame_size = raw_bytes.len;
+        node.next = null;
         node.validate() catch unreachable;
         return node;
     }
 
-    fn castUnsafe(frame: *Frame) Node {
-        // Here be dragons
-        const base_addr = @ptrToInt(frame);
-
-        return Node{
-            .frame = frame,
-            .frame_size = @intToPtr(*usize, base_addr + @byteOffsetOf(FrameLayout, "frame_size")),
-            .next = @intToPtr(*?*Frame, base_addr + @byteOffsetOf(FrameLayout, "next")),
-            .payload = @intToPtr([*]u8, base_addr + @byteOffsetOf(FrameLayout, "payload")),
-        };
-    }
-
-    pub fn cast(frame: *Frame) !Node {
-        const node = castUnsafe(frame);
+    pub fn cast(ptr: var) !*FrameNode {
+        const node = @ptrCast(*FrameNode, ptr);
         try node.validate();
         return node;
     }
 
-    pub fn restore(payload: [*]u8) !Node {
-        return try Node.cast(@ptrCast(*Frame, payload - @byteOffsetOf(FrameLayout, "payload")));
+    pub fn restore(payload: [*]u8) !*FrameNode {
+        return try FrameNode.cast(payload - @byteOffsetOf(FrameNode, "payload"));
     }
 
-    pub fn validate(self: Node) !void {
-        if (@ptrToInt(self.frame) % min_frame_size != 0) {
+    pub fn validate(self: *FrameNode) !void {
+        if (@ptrToInt(self) % min_frame_size != 0) {
             return error.UnalignedMemory;
         }
-        if (!isFrameSize(self.frame_size.*, std.os.page_size)) {
+        if (!isFrameSize(self.frame_size, std.os.page_size)) {
             return error.UnalignedMemory;
         }
     }
 
-    pub fn payloadSize(self: Node) usize {
-        return self.frame_size.* - meta_size;
+    pub fn payloadSize(self: *FrameNode) usize {
+        return self.frame_size - meta_size;
     }
 
-    pub fn toSlice(self: Node, start: usize, end: usize) []u8 {
+    pub fn payloadSlice(self: *FrameNode, start: usize, end: usize) []u8 {
         std.debug.assert(start <= end);
         std.debug.assert(end <= self.payloadSize());
-        return self.payload[start..end];
-    }
-
-    pub fn frameMeta(self: Node) FrameMeta {
-        return FrameMeta{
-            .frame = self.frame,
-            .frame_size = self.frame_size.*,
-            .next = self.next.*,
-            .payload = []u8{},
-        };
-    }
-
-    pub fn nextNode(self: Node) ?Node {
-        const frame = self.next.* orelse return null;
-        return Node.castUnsafe(frame);
+        const ptr = @ptrCast([*]u8, &self.payload);
+        return ptr[start..end];
     }
 };
 
 const FreeList = struct {
-    first: ?*Frame,
+    first: ?*FrameNode,
 
     pub fn init() FreeList {
         return FreeList{ .first = null };
     }
 
-    pub fn firstNode(self: FreeList) ?Node {
-        const frame = self.first orelse return null;
-        return Node.castUnsafe(frame);
+    pub fn prepend(self: *FreeList, node: *FrameNode) void {
+        node.next = self.first;
+        self.first = node;
     }
 
-    pub fn prepend(self: *FreeList, node: Node) void {
-        node.next.* = self.first;
-        self.first = node.frame;
-    }
-
-    pub fn removeAfter(self: *FreeList, ref: ?Node) ?*Frame {
-        const first_node = self.firstNode() orelse return null;
+    pub fn removeAfter(self: *FreeList, ref: ?*FrameNode) ?*FrameNode {
+        const first_node = self.first orelse return null;
         if (ref) |ref_node| {
-            const next_node = ref_node.nextNode() orelse return null;
-            ref_node.next.* = next_node.next.*;
-            return next_node.frame;
+            const next_node = ref_node.next orelse return null;
+            ref_node.next = next_node.next;
+            return next_node;
         } else {
-            self.first = first_node.next.*;
-            return first_node.frame;
+            self.first = first_node.next;
+            return first_node;
         }
     }
 };
@@ -165,13 +126,13 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             };
         }
 
-        fn allocNode(self: *Self, frame_size: usize) !Node {
+        fn allocNode(self: *Self, frame_size: usize) !*FrameNode {
             std.debug.assert(isFrameSize(frame_size, page_size));
             const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, std.math.max(page_size, frame_size));
-            return Node.init(rawData);
+            return FrameNode.init(rawData);
         }
 
-        fn findFreeNode(self: *Self, frame_size: usize) ?Node {
+        fn findFreeNode(self: *Self, frame_size: usize) ?*FrameNode {
             std.debug.assert(isFrameSize(frame_size, page_size));
 
             var search_size = frame_size;
@@ -179,15 +140,15 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 var i = self.freeListIndex(search_size);
 
                 var free_list = &self.free_lists[i];
-                var prev: ?Node = null;
-                var iter = free_list.firstNode();
+                var prev: ?*FrameNode = null;
+                var iter = free_list.first;
                 while (iter) |node| : ({
                     prev = iter;
-                    iter = node.nextNode();
+                    iter = node.next;
                 }) {
-                    if (node.frame_size.* == search_size) {
+                    if (node.frame_size == search_size) {
                         const removed = free_list.removeAfter(prev);
-                        std.debug.assert(removed == node.frame);
+                        std.debug.assert(removed == node);
                         return node;
                     }
                 }
@@ -198,27 +159,27 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             }
         }
 
-        fn asMinimumData(self: *Self, node: Node, target_size: usize) []u8 {
+        fn asMinimumData(self: *Self, node: *FrameNode, target_size: usize) []u8 {
             std.debug.assert(target_size <= node.payloadSize());
 
             const target_frame_size = self.padToFrameSize(target_size);
 
-            var sub_frame_size = std.math.min(node.frame_size.* / 2, page_size);
+            var sub_frame_size = std.math.min(node.frame_size / 2, page_size);
             while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
                 var i = self.freeListIndex(sub_frame_size);
                 const start = node.payloadSize() - sub_frame_size;
-                const sub_frame_data = node.toSlice(start, node.payloadSize());
-                const sub_node = Node.init(sub_frame_data);
+                const sub_frame_data = node.payloadSlice(start, node.payloadSize());
+                const sub_node = FrameNode.init(sub_frame_data);
                 self.free_lists[i].prepend(sub_node);
-                node.frame_size.* = sub_frame_size;
+                node.frame_size = sub_frame_size;
             }
 
-            return node.toSlice(0, target_size);
+            return node.payloadSlice(0, target_size);
         }
 
         fn free(self: *Self, old_mem: []u8) []u8 {
-            const node = Node.restore(old_mem.ptr) catch unreachable;
-            const i = self.freeListIndex(node.frame_size.*);
+            const node = FrameNode.restore(old_mem.ptr) catch unreachable;
+            const i = self.freeListIndex(node.frame_size);
             self.free_lists[i].prepend(node);
             return old_mem[0..0];
         }
@@ -250,7 +211,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             if (new_align > min_frame_size) {
                 return error.OutOfMemory;
             } else if (new_size <= old_mem.len) {
-                const node = Node.restore(old_mem.ptr) catch unreachable;
+                const node = FrameNode.restore(old_mem.ptr) catch unreachable;
                 return self.asMinimumData(node, new_size);
             } else {
                 const frame_size = self.padToFrameSize(new_size);
@@ -271,15 +232,15 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             if (new_size == 0) {
                 return self.free(old_mem);
             } else {
-                const node = Node.restore(old_mem.ptr) catch unreachable;
+                const node = FrameNode.restore(old_mem.ptr) catch unreachable;
                 return self.asMinimumData(node, new_size);
             }
         }
 
         fn debugCount(self: *Self, free_list: FreeList) usize {
             var count = usize(0);
-            var iter = free_list.firstNode();
-            while (iter) |node| : (iter = node.nextNode()) {
+            var iter = free_list.first;
+            while (iter) |node| : (iter = node.next) {
                 count += 1;
             }
             return count;
