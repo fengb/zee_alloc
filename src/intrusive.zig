@@ -151,6 +151,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         backing_allocator: *Allocator,
         free_lists: [size_buckets]FreeList,
+        page_size: usize,
 
         pub fn init(backing_allocator: *Allocator) @This() {
             return Self{
@@ -160,12 +161,13 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 },
                 .backing_allocator = backing_allocator,
                 .free_lists = []FreeList{FreeList.init()} ** size_buckets,
+                .page_size = page_size,
             };
         }
 
         fn allocNode(self: *Self, frame_size: usize) !Node {
             std.debug.assert(isFrameSize(frame_size, page_size));
-            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, frame_size);
+            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, std.math.max(page_size, frame_size));
             return Node.init(rawData);
         }
 
@@ -273,6 +275,29 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 return self.asMinimumData(node, new_size);
             }
         }
+
+        fn debugCount(self: *Self, free_list: FreeList) usize {
+            var count = usize(0);
+            var iter = free_list.firstNode();
+            while (iter) |node| : (iter = node.nextNode()) {
+                count += 1;
+            }
+            return count;
+        }
+
+        fn debugCountAll(self: *Self) usize {
+            var count = usize(0);
+            for (self.free_lists) |list| {
+                count += self.debugCount(list);
+            }
+            return count;
+        }
+
+        fn debugDump(self: *Self) void {
+            for (self.free_lists) |list, i| {
+                std.debug.warn("{}: {}\n", i, self.debugCount(list));
+            }
+        }
     };
 }
 
@@ -336,9 +361,30 @@ pub const wasm_allocator = init: {
     break :init &zee_allocator.allocator;
 };
 
-// -- functional tests from std/heap.zig
+// Tests
 
 const testing = std.testing;
+
+test "ZeeAlloc helpers" {
+    var buf: [0]u8 = undefined;
+    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
+    var zee_alloc = ZeeAllocDefaults.init(allocator);
+
+    @"freeListIndex": {
+        testing.expectEqual(usize(page_index), zee_alloc.freeListIndex(zee_alloc.page_size));
+        testing.expectEqual(usize(page_index + 1), zee_alloc.freeListIndex(zee_alloc.page_size / 2));
+        testing.expectEqual(usize(page_index + 2), zee_alloc.freeListIndex(zee_alloc.page_size / 4));
+    }
+
+    @"padToFrameSize": {
+        testing.expectEqual(usize(zee_alloc.page_size), zee_alloc.padToFrameSize(zee_alloc.page_size - meta_size));
+        testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToFrameSize(zee_alloc.page_size));
+        testing.expectEqual(usize(2 * zee_alloc.page_size), zee_alloc.padToFrameSize(zee_alloc.page_size - meta_size + 1));
+        testing.expectEqual(usize(3 * zee_alloc.page_size), zee_alloc.padToFrameSize(2 * zee_alloc.page_size));
+    }
+}
+
+// -- functional tests from std/heap.zig
 
 fn testAllocator(allocator: *std.mem.Allocator) !void {
     var slice = try allocator.alloc(*i32, 100);
@@ -368,10 +414,206 @@ fn testAllocator(allocator: *std.mem.Allocator) !void {
     allocator.free(slice);
 }
 
+fn testAllocatorAligned(allocator: *Allocator, comptime alignment: u29) !void {
+    // initial
+    var slice = try allocator.alignedAlloc(u8, alignment, 10);
+    testing.expectEqual(slice.len, 10);
+    // grow
+    slice = try allocator.realloc(slice, 100);
+    testing.expectEqual(slice.len, 100);
+    // shrink
+    slice = allocator.shrink(slice, 10);
+    testing.expectEqual(slice.len, 10);
+    // go to zero
+    slice = allocator.shrink(slice, 0);
+    testing.expectEqual(slice.len, 0);
+    // realloc from zero
+    slice = try allocator.realloc(slice, 100);
+    testing.expectEqual(slice.len, 100);
+    // shrink with shrink
+    slice = allocator.shrink(slice, 10);
+    testing.expectEqual(slice.len, 10);
+    // shrink to zero
+    slice = allocator.shrink(slice, 0);
+    testing.expectEqual(slice.len, 0);
+}
+
+fn testAllocatorLargeAlignment(allocator: *Allocator) Allocator.Error!void {
+    //Maybe a platform's page_size is actually the same as or
+    //  very near usize?
+
+    // TODO: support ultra wide alignment (bigger than page_size)
+    //if (std.os.page_size << 2 > std.math.maxInt(usize)) return;
+
+    //const USizeShift = @IntType(false, std.math.log2(usize.bit_count));
+    //const large_align = u29(std.os.page_size << 2);
+    const USizeShift = @IntType(false, std.math.log2(usize.bit_count));
+    const large_align = u29(std.os.page_size);
+
+    var align_mask: usize = undefined;
+    _ = @shlWithOverflow(usize, ~usize(0), USizeShift(@ctz(usize, large_align)), &align_mask);
+
+    var slice = try allocator.alignedAlloc(u8, large_align, 500);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = allocator.shrink(slice, 100);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = try allocator.realloc(slice, 5000);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = allocator.shrink(slice, 10);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    slice = try allocator.realloc(slice, 20000);
+    testing.expectEqual(@ptrToInt(slice.ptr) & align_mask, @ptrToInt(slice.ptr));
+
+    allocator.free(slice);
+}
+
+fn testAllocatorAlignedShrink(allocator: *Allocator) Allocator.Error!void {
+    var debug_buffer: [1000]u8 = undefined;
+    const debug_allocator = &std.heap.FixedBufferAllocator.init(&debug_buffer).allocator;
+
+    const alloc_size = std.os.page_size * 2 + 50;
+    var slice = try allocator.alignedAlloc(u8, 16, alloc_size);
+    defer allocator.free(slice);
+
+    var stuff_to_free = std.ArrayList([]align(16) u8).init(debug_allocator);
+    // On Windows, VirtualAlloc returns addresses aligned to a 64K boundary,
+    // which is 16 pages, hence the 32. This test may require to increase
+    // the size of the allocations feeding the `allocator` parameter if they
+    // fail, because of this high over-alignment we want to have.
+    while (@ptrToInt(slice.ptr) == std.mem.alignForward(@ptrToInt(slice.ptr), std.os.page_size * 32)) {
+        try stuff_to_free.append(slice);
+        slice = try allocator.alignedAlloc(u8, 16, alloc_size);
+    }
+    while (stuff_to_free.popOrNull()) |item| {
+        allocator.free(item);
+    }
+    slice[0] = 0x12;
+    slice[60] = 0x34;
+
+    // realloc to a smaller size but with a larger alignment
+    slice = try allocator.alignedRealloc(slice, std.os.page_size, alloc_size / 2);
+    testing.expectEqual(slice[0], 0x12);
+    testing.expectEqual(slice[60], 0x34);
+}
+
+test "ZeeAlloc internals" {
+    var buf: [1000000]u8 = undefined;
+    var allocator = &std.heap.FixedBufferAllocator.init(buf[0..]).allocator;
+    var zee_alloc = ZeeAllocDefaults.init(allocator);
+
+    testing.expectEqual(zee_alloc.debugCountAll(), 0);
+
+    @"node count makes sense": {
+        var mem = zee_alloc.allocator.create(u8);
+        const free_nodes = zee_alloc.debugCountAll();
+        testing.expect(free_nodes > 0);
+
+        var mem2 = zee_alloc.allocator.create(u8);
+        testing.expect(zee_alloc.debugCountAll() < free_nodes);
+    }
+}
+
 test "ZeeAlloc with FixedBufferAllocator" {
     var buf: [1000000]u8 = undefined;
     var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
     var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
     try testAllocator(&zee_alloc.allocator);
+    try testAllocatorAligned(&zee_alloc.allocator, 8);
+    // try testAllocatorLargeAlignment(&zee_alloc.allocator);
+    // try testAllocatorAlignedShrink(&zee_alloc.allocator);
+}
+
+test "ZeeAlloc with DirectAllocator" {
+    var buf: [1000000]u8 = undefined;
+    var direct_allocator = std.heap.DirectAllocator.init();
+    var zee_alloc = ZeeAllocDefaults.init(&direct_allocator.allocator);
+
+    try testAllocator(&zee_alloc.allocator);
+    try testAllocatorAligned(&zee_alloc.allocator, 8);
+    // try testAllocatorLargeAlignment(&zee_alloc.allocator);
+    // try testAllocatorAlignedShrink(&zee_alloc.allocator);
+}
+
+const bench = @import("bench.zig");
+var test_buf: [1024 * 1024]u8 = undefined;
+test "gc.benchmark" {
+    try bench.benchmark(struct {
+        const Arg = struct {
+            num: usize,
+            size: usize,
+
+            fn benchAllocator(a: Arg, allocator: *Allocator, comptime free: bool) !void {
+                var i: usize = 0;
+                while (i < a.num) : (i += 1) {
+                    const bytes = try allocator.alloc(u8, a.size);
+                    defer if (free) allocator.free(bytes);
+                }
+            }
+        };
+
+        pub const args = []Arg{
+            Arg{ .num = 10 * 1, .size = 1024 * 1 },
+            Arg{ .num = 10 * 2, .size = 1024 * 1 },
+            Arg{ .num = 10 * 4, .size = 1024 * 1 },
+            Arg{ .num = 10 * 1, .size = 1024 * 2 },
+            Arg{ .num = 10 * 2, .size = 1024 * 2 },
+            Arg{ .num = 10 * 4, .size = 1024 * 2 },
+            Arg{ .num = 10 * 1, .size = 1024 * 4 },
+            Arg{ .num = 10 * 2, .size = 1024 * 4 },
+            Arg{ .num = 10 * 4, .size = 1024 * 4 },
+        };
+
+        pub const iterations = 10000;
+
+        pub fn FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            a.benchAllocator(&fba.allocator, false) catch unreachable;
+        }
+
+        pub fn Arena_FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            var arena = std.heap.ArenaAllocator.init(&fba.allocator);
+            defer arena.deinit();
+
+            a.benchAllocator(&arena.allocator, false) catch unreachable;
+        }
+
+        pub fn ZeeAlloc_FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            var zee_alloc = ZeeAllocDefaults.init(&fba.allocator);
+
+            a.benchAllocator(&zee_alloc.allocator, false) catch unreachable;
+        }
+
+        pub fn DirectAllocator(a: Arg) void {
+            var da = std.heap.DirectAllocator.init();
+            defer da.deinit();
+
+            a.benchAllocator(&da.allocator, true) catch unreachable;
+        }
+
+        pub fn Arena_DirectAllocator(a: Arg) void {
+            var da = std.heap.DirectAllocator.init();
+            defer da.deinit();
+
+            var arena = std.heap.ArenaAllocator.init(&da.allocator);
+            defer arena.deinit();
+
+            a.benchAllocator(&arena.allocator, false) catch unreachable;
+        }
+
+        pub fn ZeeAlloc_DirectAllocator(a: Arg) void {
+            var da = std.heap.DirectAllocator.init();
+            defer da.deinit();
+
+            var zee_alloc = ZeeAllocDefaults.init(&da.allocator);
+
+            a.benchAllocator(&zee_alloc.allocator, false) catch unreachable;
+        }
+    });
 }
