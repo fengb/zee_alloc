@@ -127,7 +127,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn allocNode(self: *Self, memsize: usize) !*FrameNode {
-            const alloc_size = ceilToMultiple(page_size, memsize);
+            const alloc_size = ceilToMultiple(page_size, memsize + meta_size);
             const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, alloc_size);
             return FrameNode.init(rawData);
         }
