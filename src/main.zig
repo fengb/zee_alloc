@@ -126,16 +126,15 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             };
         }
 
-        fn allocNode(self: *Self, frame_size: usize) !*FrameNode {
-            std.debug.assert(isFrameSize(frame_size, page_size));
-            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, std.math.max(page_size, frame_size));
+        fn allocNode(self: *Self, memsize: usize) !*FrameNode {
+            const alloc_size = ceilToMultiple(page_size, memsize);
+            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, alloc_size);
             return FrameNode.init(rawData);
         }
 
-        fn findFreeNode(self: *Self, frame_size: usize) ?*FrameNode {
-            std.debug.assert(isFrameSize(frame_size, page_size));
+        fn findFreeNode(self: *Self, memsize: usize) ?*FrameNode {
+            var search_size = self.padToFrameSize(memsize);
 
-            var search_size = frame_size;
             while (true) : (search_size *= 2) {
                 var i = self.freeListIndex(search_size);
 
@@ -214,8 +213,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 const node = FrameNode.restore(old_mem.ptr) catch unreachable;
                 return self.asMinimumData(node, new_size);
             } else {
-                const frame_size = self.padToFrameSize(new_size);
-                const node = self.findFreeNode(frame_size) orelse try self.allocNode(frame_size);
+                const node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
 
                 const result = self.asMinimumData(node, new_size);
 
