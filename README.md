@@ -19,68 +19,69 @@ _(inspired by Rust's [wee_alloc](https://github.com/rustwasm/wee_alloc))_
 - Debugging — this library probably will never do a good job identifying errors.
   Zig has a great [debug allocator](https://github.com/andrewrk/zig-general-purpose-allocator)
   in the works, and zig programs should be able to easily swap allocators.
-- Compact memory — fixed allocation blocks are used for speed and simplicity.
+- Compact memory — fixed allocation frames are used for speed and simplicity.
   Memory usage will never be optimum unless the underlying algorithm completely changes
+- Thread performance — wasm is single-threaded
 
 ### Benchmarks
 
 ```
 Benchmark                                   Mean(ns)
 ----------------------------------------------------
-DirectAllocator.0                              49826
-DirectAllocator.1                              94288
-DirectAllocator.2                             187607
-DirectAllocator.3                              47901
-DirectAllocator.4                              94792
-DirectAllocator.5                             190626
-DirectAllocator.6                              48282
-DirectAllocator.7                              94981
-DirectAllocator.8                             188808
-Arena_DirectAllocator.0                        12570
-Arena_DirectAllocator.1                        21287
-Arena_DirectAllocator.2                        33345
-Arena_DirectAllocator.3                        31358
-Arena_DirectAllocator.4                        49282
-Arena_DirectAllocator.5                        72057
-Arena_DirectAllocator.6                        43083
-Arena_DirectAllocator.7                        66272
-Arena_DirectAllocator.8                        99620
-ZeeAlloc_DirectAllocator.0                     15479
-ZeeAlloc_DirectAllocator.1                     24774
-ZeeAlloc_DirectAllocator.2                     46282
-ZeeAlloc_DirectAllocator.3                     24442
-ZeeAlloc_DirectAllocator.4                     43567
-ZeeAlloc_DirectAllocator.5                     82898
-ZeeAlloc_DirectAllocator.6                     38162
-ZeeAlloc_DirectAllocator.7                     77623
-ZeeAlloc_DirectAllocator.8                    158367
-FixedBufferAllocator.0                           768
-FixedBufferAllocator.1                          1555
-FixedBufferAllocator.2                          3382
-FixedBufferAllocator.3                           980
-FixedBufferAllocator.4                          2034
-FixedBufferAllocator.5                          3965
-FixedBufferAllocator.6                          1334
-FixedBufferAllocator.7                          2668
-FixedBufferAllocator.8                          4997
-Arena_FixedBufferAllocator.0                    1237
-Arena_FixedBufferAllocator.1                    2299
-Arena_FixedBufferAllocator.2                    4190
-Arena_FixedBufferAllocator.3                    2036
-Arena_FixedBufferAllocator.4                    6210
-Arena_FixedBufferAllocator.5                    6485
-Arena_FixedBufferAllocator.6                    2754
-Arena_FixedBufferAllocator.7                    5002
-Arena_FixedBufferAllocator.8                    8905
-ZeeAlloc_FixedBufferAllocator.0                 2831
-ZeeAlloc_FixedBufferAllocator.1                 4857
-ZeeAlloc_FixedBufferAllocator.2                 8864
-ZeeAlloc_FixedBufferAllocator.3                 3023
-ZeeAlloc_FixedBufferAllocator.4                 5488
-ZeeAlloc_FixedBufferAllocator.5                 9809
-ZeeAlloc_FixedBufferAllocator.6                 2696
-ZeeAlloc_FixedBufferAllocator.7                 5722
-ZeeAlloc_FixedBufferAllocator.8                10091
+DirectAllocator.0                              48554
+DirectAllocator.1                              95779
+DirectAllocator.2                             190130
+DirectAllocator.3                              47516
+DirectAllocator.4                              95769
+DirectAllocator.5                             194154
+DirectAllocator.6                              48379
+DirectAllocator.7                              96468
+DirectAllocator.8                             197277
+Arena_DirectAllocator.0                        12720
+Arena_DirectAllocator.1                        21424
+Arena_DirectAllocator.2                        32831
+Arena_DirectAllocator.3                        29824
+Arena_DirectAllocator.4                        48563
+Arena_DirectAllocator.5                        71561
+Arena_DirectAllocator.6                        41373
+Arena_DirectAllocator.7                        64670
+Arena_DirectAllocator.8                       100955
+ZeeAlloc_DirectAllocator.0                     18631
+ZeeAlloc_DirectAllocator.1                     37117
+ZeeAlloc_DirectAllocator.2                     79334
+ZeeAlloc_DirectAllocator.3                     36779
+ZeeAlloc_DirectAllocator.4                     72324
+ZeeAlloc_DirectAllocator.5                    148178
+ZeeAlloc_DirectAllocator.6                     55344
+ZeeAlloc_DirectAllocator.7                    113971
+ZeeAlloc_DirectAllocator.8                    226724
+FixedBufferAllocator.0                           725
+FixedBufferAllocator.1                          1470
+FixedBufferAllocator.2                          3186
+FixedBufferAllocator.3                           904
+FixedBufferAllocator.4                          1972
+FixedBufferAllocator.5                          3770
+FixedBufferAllocator.6                          1280
+FixedBufferAllocator.7                          2532
+FixedBufferAllocator.8                          4989
+Arena_FixedBufferAllocator.0                    1185
+Arena_FixedBufferAllocator.1                    2165
+Arena_FixedBufferAllocator.2                    4423
+Arena_FixedBufferAllocator.3                    2076
+Arena_FixedBufferAllocator.4                    3701
+Arena_FixedBufferAllocator.5                    7778
+Arena_FixedBufferAllocator.6                    2693
+Arena_FixedBufferAllocator.7                    4982
+Arena_FixedBufferAllocator.8                    8757
+ZeeAlloc_FixedBufferAllocator.0                 2190
+ZeeAlloc_FixedBufferAllocator.1                 5087
+ZeeAlloc_FixedBufferAllocator.2                 9136
+ZeeAlloc_FixedBufferAllocator.3                 2619
+ZeeAlloc_FixedBufferAllocator.4                 5169
+ZeeAlloc_FixedBufferAllocator.5                10025
+ZeeAlloc_FixedBufferAllocator.6                 3124
+ZeeAlloc_FixedBufferAllocator.7                 6378
+ZeeAlloc_FixedBufferAllocator.8                14989
 ```
 
 ### Architecture — [Buddy memory allocation](https://en.wikipedia.org/wiki/Buddy_memory_allocation)
@@ -89,25 +90,21 @@ _Caveat: I knew **nothing** about memory allocation when starting this project.
 Any semblence of competence is merely a coincidence._
 
 ```
-idx block_size
- 0  >64K  oversized
- 1   64K  wasm page size
- 2   32K
- 3   16K
- 4    8K
- 5    4K
- 6    2K
- 7    1K
- 8   512
- 9   256
-10   128
-11    64
-12    32
-13    16
-14     8
-15     4  smallest block
-
-+ unused nodes
+idx frame_size
+ 0  >65536  oversized
+ 1   65536  wasm page size
+ 2   32768
+ 3   16384
+ 4    8192
+ 5    4096
+ 6    2048
+ 7    1024
+ 8     512
+ 9     256
+10     128
+11      64
+12      32
+13      16  smallest frame
 ```
 
 Size order is reversed because 0 and 1 are special.  I believe counting down had
@@ -115,23 +112,18 @@ slightly better semantics than counting up but I haven't actually tested it.
 
 Wasm only allows for allocating entire pages (64K) at a time. Current architecture is
 heavily influenced by this behavior. In a real OS, the page size is much smaller at 4K.
-Everything should work as expected even if it's not as efficient as possible.
+Everything should work as expected even if it does not run as efficient as possible.
 
-Upon initialization, we allocate an entire page for unused nodes (~5400). This is
-rather extreme and we should tune the first page to have some actual usage space.
+Each allocation frame consists of 2 words of metadata: the frame size and a pointer to
+the next free node. This enables some rudimentary debugging as well as a simple lookup
+when we only have the allocated data-block (especially important for C compatibility).
 
-For allocations <=64K in size, we find the smallest usable free block.  If it's
+For allocations <=64K in size, we find the smallest usable free frame.  If it's
 bigger than necessary, we grab the smallest power of 2 we need and resize the rest
 to toss back as free nodes. This is O(log k) which is O(1).
 
 For allocations >64K, we iterate through list 0 to find a matching size, O(n).
-Free oversized blocks are never divided into smaller allocations.
+Free oversized frames are never divided into smaller allocations.
 
-ZeeAlloc only supports pointer alignment up to a page size — 64K in wasm.  This
-ought to be enough for anybody™.  Free nodes currently don't try to preserve alignment
-so they may be consumed by a division.  Since we use the buddy system, blocks are
-automatically aligned pretty well.
-
-Currently, when a block is allocated, it "disappears" from the allocator entirely
-and its node returns back to the "unused" pool.  In theory this is more efficient
-since we can get away with fewer nodes, but it also means we can't track allocations.
+ZeeAlloc only supports pointer alignment up to 2x word size — 8 bytes in wasm. There
+are a few ideas to expand this to up-to half page_size but nothing concrete yet.
