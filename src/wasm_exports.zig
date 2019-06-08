@@ -2,7 +2,15 @@ const builtin = @import("builtin");
 const zee_alloc = @import("main.zig");
 
 export fn malloc(size: usize) ?*c_void {
-    var result = zee_alloc.wasm_allocator.alloc(u8, size) catch return null;
+    const result = zee_alloc.wasm_allocator.alloc(u8, size) catch return null;
+    return result.ptr;
+}
+
+export fn realloc(c_ptr: *c_void, new_size: usize) ?*c_void {
+    // Use a synthetic slice
+    const ptr = @ptrCast([*]u8, c_ptr);
+    // Optimize: find frame size instead of assuming 1 and always resizing
+    const result = zee_alloc.wasm_allocator.realloc(ptr[0..1], new_size) catch return null;
     return result.ptr;
 }
 
