@@ -1,5 +1,3 @@
-// https://github.com/Hejsil/zig-bench
-
 const builtin = @import("builtin");
 const std = @import("std");
 
@@ -8,24 +6,24 @@ const io = std.io;
 const math = std.math;
 const mem = std.mem;
 const meta = std.meta;
-const time = std.os.time;
+const time = std.time;
 
-const Def = builtin.TypeInfo.Definition;
+const Decl = builtin.TypeInfo.Declaration;
 
 pub fn benchmark(comptime B: type) !void {
-    const args = if (@hasDecl(B, "args")) B.args else []void{{}};
+    const args = if (@hasDecl(B, "args")) B.args else [_]void{{}};
     const iterations: u32 = if (@hasDecl(B, "iterations")) B.iterations else 100000;
 
     comptime var max_fn_name_len = 0;
     const functions = comptime blk: {
-        var res: []const Def = []Def{};
-        for (meta.definitions(B)) |def| {
-            if (def.data != builtin.TypeInfo.Definition.Data.Fn)
+        var res: []const Decl = [_]Decl{};
+        for (meta.declarations(B)) |decl| {
+            if (decl.data != Decl.Data.Fn)
                 continue;
 
-            if (max_fn_name_len < def.name.len)
-                max_fn_name_len = def.name.len;
-            res = res ++ []Def{def};
+            if (max_fn_name_len < decl.name.len)
+                max_fn_name_len = decl.name.len;
+            res = res ++ [_]Decl{decl};
         }
 
         break :blk res;
@@ -98,4 +96,42 @@ fn nTimes(c: u8, times: usize) void {
     var i: usize = 0;
     while (i < times) : (i += 1)
         debug.warn("{c}", c);
+}
+
+test "benchmark" {
+    try benchmark(struct {
+        // The functions will be benchmarked with the following inputs.
+        // If not present, then it is assumed that the functions
+        // take no input.
+        const args = [_][]const u8{
+            [_]u8{ 1, 10, 100 } ** 16,
+            [_]u8{ 1, 10, 100 } ** 32,
+            [_]u8{ 1, 10, 100 } ** 64,
+            [_]u8{ 1, 10, 100 } ** 128,
+            [_]u8{ 1, 10, 100 } ** 256,
+            [_]u8{ 1, 10, 100 } ** 512,
+        };
+
+        // How many iterations to run each benchmark.
+        // If not present then a default will be used.
+        const iterations = 100000;
+
+        fn sum_slice(slice: []const u8) u64 {
+            var res: u64 = 0;
+            for (slice) |item|
+                res += item;
+
+            return res;
+        }
+
+        fn sum_stream(slice: []const u8) u64 {
+            var stream = &io.SliceInStream.init(slice).stream;
+            var res: u64 = 0;
+            while (stream.readByte()) |c| {
+                res += c;
+            } else |_| {}
+
+            return res;
+        }
+    });
 }
