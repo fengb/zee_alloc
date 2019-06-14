@@ -108,22 +108,17 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
     return struct {
         const Self = @This();
 
-        allocator: Allocator,
-
         backing_allocator: *Allocator,
-        free_lists: [size_buckets]FreeList,
-        page_size: usize,
 
-        pub fn init(backing_allocator: *Allocator) @This() {
-            return Self{
-                .allocator = Allocator{
-                    .reallocFn = realloc,
-                    .shrinkFn = shrink,
-                },
-                .backing_allocator = backing_allocator,
-                .free_lists = [_]FreeList{FreeList.init()} ** size_buckets,
-                .page_size = page_size,
-            };
+        free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
+        page_size: usize = page_size,
+        allocator: Allocator = Allocator{
+            .reallocFn = realloc,
+            .shrinkFn = shrink,
+        },
+
+        pub fn init(backing_allocator: *Allocator) Self {
+            return Self{ .backing_allocator = backing_allocator };
         }
 
         fn allocNode(self: *Self, memsize: usize) !*FrameNode {
