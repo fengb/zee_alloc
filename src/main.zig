@@ -13,14 +13,8 @@ fn ceilPowerOfTwo(comptime T: type, value: T) T {
     return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
 }
 
-fn ceilToMultiple(comptime target: comptime_int, value: usize) usize {
-    const remainder = value % target;
-    return value + (target - remainder) % target;
-}
-
 fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
-    return memsize > 0 and
-        (memsize % page_size == 0 or memsize == ceilPowerOfTwo(usize, memsize));
+    return memsize % page_size == 0 or memsize == std.math.floorPowerOfTwo(usize, memsize);
 }
 
 // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
@@ -122,7 +116,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn allocNode(self: *Self, memsize: usize) !*FrameNode {
-            const alloc_size = ceilToMultiple(page_size, memsize + meta_size);
+            const alloc_size = std.mem.alignForward(memsize + meta_size, page_size);
             const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, alloc_size);
             return FrameNode.init(rawData);
         }
@@ -185,7 +179,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             } else if (meta_memsize <= page_size) {
                 return ceilPowerOfTwo(usize, meta_memsize);
             } else {
-                return ceilToMultiple(page_size, meta_memsize);
+                return std.mem.alignForward(meta_memsize, page_size);
             }
         }
 
