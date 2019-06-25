@@ -474,8 +474,7 @@ test "ZeeAlloc with FixedBufferAllocator" {
 
 test "ZeeAlloc with DirectAllocator" {
     var buf: [1000000]u8 = undefined;
-    var direct_allocator = std.heap.DirectAllocator.init();
-    var zee_alloc = ZeeAllocDefaults.init(&direct_allocator.allocator);
+    var zee_alloc = ZeeAllocDefaults.init(std.heap.direct_allocator);
 
     try testAllocator(&zee_alloc.allocator);
     try testAllocatorAligned(&zee_alloc.allocator, 8);
@@ -535,27 +534,18 @@ test "gc.benchmark" {
         }
 
         pub fn DirectAllocator(a: Arg) void {
-            var da = std.heap.DirectAllocator.init();
-            defer da.deinit();
-
-            a.benchAllocator(&da.allocator, true) catch unreachable;
+            a.benchAllocator(std.heap.direct_allocator, true) catch unreachable;
         }
 
         pub fn Arena_DirectAllocator(a: Arg) void {
-            var da = std.heap.DirectAllocator.init();
-            defer da.deinit();
-
-            var arena = std.heap.ArenaAllocator.init(&da.allocator);
+            var arena = std.heap.ArenaAllocator.init(std.heap.direct_allocator);
             defer arena.deinit();
 
             a.benchAllocator(&arena.allocator, false) catch unreachable;
         }
 
         pub fn ZeeAlloc_DirectAllocator(a: Arg) void {
-            var da = std.heap.DirectAllocator.init();
-            defer da.deinit();
-
-            var zee_alloc = ZeeAllocDefaults.init(&da.allocator);
+            var zee_alloc = ZeeAllocDefaults.init(std.heap.direct_allocator);
 
             a.benchAllocator(&zee_alloc.allocator, false) catch unreachable;
         }
