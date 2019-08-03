@@ -14,36 +14,34 @@ fn ceilPowerOfTwo(comptime T: type, value: T) T {
 }
 
 fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
-    return memsize % page_size == 0 or memsize == std.math.floorPowerOfTwo(usize, memsize);
+    return memsize % page_size == 0 or std.math.isPowerOfTwo(memsize);
 }
 
 // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
 const FrameNode = packed struct {
+    const payload_size = 2 * @sizeOf(usize);
+
     frame_size: usize,
     next: ?*FrameNode,
     // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
-    payload: [@sizeOf(usize)]u8,
+    payload: [payload_size]u8,
 
     pub fn init(raw_bytes: []u8) *FrameNode {
         const node = @ptrCast(*FrameNode, raw_bytes.ptr);
         node.frame_size = raw_bytes.len;
-        node.next = null;
+        node.next = undefined;
         node.validate() catch unreachable;
         return node;
     }
 
-    pub fn cast(ptr: var) !*FrameNode {
-        const node = @ptrCast(*FrameNode, ptr);
+    pub fn restore(payload: [*]u8) !*FrameNode {
+        const node = @fieldParentPtr(FrameNode, "payload", @ptrCast(*[payload_size]u8, payload));
         try node.validate();
         return node;
     }
 
-    pub fn restore(payload: [*]u8) !*FrameNode {
-        return try FrameNode.cast(payload - @byteOffsetOf(FrameNode, "payload"));
-    }
-
     pub fn validate(self: *FrameNode) !void {
-        if (@ptrToInt(self) % min_frame_size != 0) {
+        if (@ptrToInt(self) % payload_size != 0) {
             return error.UnalignedMemory;
         }
         if (!isFrameSize(self.frame_size, std.mem.page_size)) {
