@@ -201,14 +201,14 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             const current_node = if (old_mem.len == 0) null else blk: {
                 const node = FrameNode.restore(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
-                    return self.asMinimumData(node, new_size);
+                    return @noInlineCall(self.asMinimumData, node, new_size);
                 }
                 break :blk node;
             };
 
             const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
             new_node.next = allocated_signal;
-            const result = self.asMinimumData(new_node, new_size);
+            const result = @noInlineCall(self.asMinimumData, new_node, new_size);
 
             if (current_node) |node| {
                 std.mem.copy(u8, result, old_mem);
@@ -225,7 +225,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 self.free(node);
                 return [_]u8{};
             } else {
-                return self.asMinimumData(node, new_size);
+                return @noInlineCall(self.asMinimumData, node, new_size);
             }
         }
 
