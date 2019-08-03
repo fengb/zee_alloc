@@ -9,7 +9,6 @@ export fn malloc(size: usize) ?*c_void {
 export fn realloc(c_ptr: *c_void, new_size: usize) ?*c_void {
     // Use a synthetic slice
     const ptr = @ptrCast([*]u8, c_ptr);
-    // Optimize: find frame size instead of assuming 1 and always resizing
     const result = zee_alloc.wasm_allocator.realloc(ptr[0..1], new_size) catch return null;
     return result.ptr;
 }
