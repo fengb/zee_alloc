@@ -163,11 +163,9 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             return node.payloadSlice(0, target_size);
         }
 
-        fn free(self: *Self, old_mem: []u8) []u8 {
-            const node = FrameNode.restore(old_mem.ptr) catch unreachable;
+        fn free(self: *Self, node: *FrameNode) void {
             const i = self.freeListIndex(node.frame_size);
             self.free_lists[i].prepend(node);
-            return old_mem[0..0];
         }
 
         fn padToFrameSize(self: *Self, memsize: usize) usize {
@@ -196,28 +194,33 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             if (new_align > min_frame_size) {
                 return error.OutOfMemory;
-            } else if (new_size <= old_mem.len) {
-                const node = FrameNode.restore(old_mem.ptr) catch unreachable;
-                return self.asMinimumData(node, new_size);
-            } else {
-                const node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
-
-                const result = self.asMinimumData(node, new_size);
-
-                if (old_mem.len > 0) {
-                    std.mem.copy(u8, result, old_mem);
-                    _ = self.free(old_mem);
-                }
-                return result[0..new_size];
             }
+
+            const current_node = if (old_mem.len == 0) null else blk: {
+                const node = FrameNode.restore(old_mem.ptr) catch unreachable;
+                if (new_size <= node.payloadSize()) {
+                    return self.asMinimumData(node, new_size);
+                }
+                break :blk node;
+            };
+
+            const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
+            const result = self.asMinimumData(new_node, new_size);
+
+            if (current_node) |node| {
+                std.mem.copy(u8, result, old_mem);
+                self.free(node);
+            }
+            return result[0..new_size];
         }
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
+            const node = FrameNode.restore(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
-                return self.free(old_mem);
+                self.free(node);
+                return [_]u8{};
             } else {
-                const node = FrameNode.restore(old_mem.ptr) catch unreachable;
                 return self.asMinimumData(node, new_size);
             }
         }
@@ -334,6 +337,20 @@ test "ZeeAlloc internals" {
         zee_alloc.allocator.free(big1);
         testing.expectEqual(prev_free_nodes + 1, zee_alloc.debugCountAll());
         testing.expectEqual(usize(1), zee_alloc.debugCount(oversized_index));
+    }
+
+    @"realloc reuses frame if possible": {
+        var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
+        var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
+
+        const orig = try zee_alloc.allocator.alloc(u8, 1);
+        const addr = orig.ptr;
+
+        var i = usize(2);
+        while (i <= min_payload_size) : (i += 1) {
+            var re = try zee_alloc.allocator.realloc(orig, i);
+            testing.expectEqual(re.ptr, addr);
+        }
     }
 }
 
