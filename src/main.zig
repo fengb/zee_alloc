@@ -2,9 +2,9 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
-const meta_size = @byteOffsetOf(FrameNode, "payload");
-pub const min_frame_size = ceilPowerOfTwo(usize, meta_size + 1);
-pub const min_payload_size = min_frame_size - meta_size;
+const meta_size = 2 * @sizeOf(usize);
+pub const min_payload_size = meta_size;
+pub const min_frame_size = meta_size + min_payload_size;
 
 // https://github.com/ziglang/zig/issues/2426
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
@@ -19,12 +19,12 @@ fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
 
 // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
 const FrameNode = packed struct {
-    const payload_size = 2 * @sizeOf(usize);
+    const alignment = 2 * @sizeOf(usize);
 
     frame_size: usize,
     next: ?*FrameNode,
     // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
-    payload: [payload_size]u8,
+    payload: [min_payload_size]u8,
 
     pub fn init(raw_bytes: []u8) *FrameNode {
         const node = @ptrCast(*FrameNode, raw_bytes.ptr);
@@ -35,13 +35,13 @@ const FrameNode = packed struct {
     }
 
     pub fn restore(payload: [*]u8) !*FrameNode {
-        const node = @fieldParentPtr(FrameNode, "payload", @ptrCast(*[payload_size]u8, payload));
+        const node = @fieldParentPtr(FrameNode, "payload", @ptrCast(*[min_payload_size]u8, payload));
         try node.validate();
         return node;
     }
 
     pub fn validate(self: *FrameNode) !void {
-        if (@ptrToInt(self) % payload_size != 0) {
+        if (@ptrToInt(self) % alignment != 0) {
             return error.UnalignedMemory;
         }
         if (!isFrameSize(self.frame_size, std.mem.page_size)) {
