@@ -98,40 +98,72 @@ fn nTimes(c: u8, times: usize) void {
         debug.warn("{c}", c);
 }
 
-test "benchmark" {
+const zee_alloc = @import("main.zig");
+var test_buf: [1024 * 1024]u8 = undefined;
+test "ZeeAlloc benchmark" {
     try benchmark(struct {
-        // The functions will be benchmarked with the following inputs.
-        // If not present, then it is assumed that the functions
-        // take no input.
-        const args = [_][]const u8{
-            [_]u8{ 1, 10, 100 } ** 16,
-            [_]u8{ 1, 10, 100 } ** 32,
-            [_]u8{ 1, 10, 100 } ** 64,
-            [_]u8{ 1, 10, 100 } ** 128,
-            [_]u8{ 1, 10, 100 } ** 256,
-            [_]u8{ 1, 10, 100 } ** 512,
+        const Arg = struct {
+            num: usize,
+            size: usize,
+
+            fn benchAllocator(a: Arg, allocator: *std.mem.Allocator, comptime free: bool) !void {
+                var i: usize = 0;
+                while (i < a.num) : (i += 1) {
+                    const bytes = try allocator.alloc(u8, a.size);
+                    defer if (free) allocator.free(bytes);
+                }
+            }
         };
 
-        // How many iterations to run each benchmark.
-        // If not present then a default will be used.
-        const iterations = 100000;
+        pub const args = [_]Arg{
+            Arg{ .num = 10 * 1, .size = 1024 * 1 },
+            Arg{ .num = 10 * 2, .size = 1024 * 1 },
+            Arg{ .num = 10 * 4, .size = 1024 * 1 },
+            Arg{ .num = 10 * 1, .size = 1024 * 2 },
+            Arg{ .num = 10 * 2, .size = 1024 * 2 },
+            Arg{ .num = 10 * 4, .size = 1024 * 2 },
+            Arg{ .num = 10 * 1, .size = 1024 * 4 },
+            Arg{ .num = 10 * 2, .size = 1024 * 4 },
+            Arg{ .num = 10 * 4, .size = 1024 * 4 },
+        };
 
-        fn sum_slice(slice: []const u8) u64 {
-            var res: u64 = 0;
-            for (slice) |item|
-                res += item;
+        pub const iterations = 10000;
 
-            return res;
+        pub fn FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            a.benchAllocator(&fba.allocator, false) catch unreachable;
         }
 
-        fn sum_stream(slice: []const u8) u64 {
-            var stream = &io.SliceInStream.init(slice).stream;
-            var res: u64 = 0;
-            while (stream.readByte()) |c| {
-                res += c;
-            } else |_| {}
+        pub fn Arena_FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            var arena = std.heap.ArenaAllocator.init(&fba.allocator);
+            defer arena.deinit();
 
-            return res;
+            a.benchAllocator(&arena.allocator, false) catch unreachable;
+        }
+
+        pub fn ZeeAlloc_FixedBufferAllocator(a: Arg) void {
+            var fba = std.heap.FixedBufferAllocator.init(test_buf[0..]);
+            var za = zee_alloc.ZeeAllocDefaults.init(&fba.allocator);
+
+            a.benchAllocator(&za.allocator, false) catch unreachable;
+        }
+
+        pub fn DirectAllocator(a: Arg) void {
+            a.benchAllocator(std.heap.direct_allocator, true) catch unreachable;
+        }
+
+        pub fn Arena_DirectAllocator(a: Arg) void {
+            var arena = std.heap.ArenaAllocator.init(std.heap.direct_allocator);
+            defer arena.deinit();
+
+            a.benchAllocator(&arena.allocator, false) catch unreachable;
+        }
+
+        pub fn ZeeAlloc_DirectAllocator(a: Arg) void {
+            var za = zee_alloc.ZeeAllocDefaults.init(std.heap.direct_allocator);
+
+            a.benchAllocator(&za.allocator, false) catch unreachable;
         }
     });
 }
