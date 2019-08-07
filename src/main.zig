@@ -214,7 +214,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 std.mem.copy(u8, result, old_mem);
                 self.free(node);
             }
-            return result[0..new_size];
+            return result;
         }
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
