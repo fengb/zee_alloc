@@ -114,7 +114,7 @@ Wasm only allows for allocating entire pages (64K) at a time. Current architectu
 heavily influenced by this behavior. In a real OS, the page size is much smaller at 4K.
 Everything should work as expected even if it does not run as efficient as possible.
 
-Each allocation frame consists of 2 words of metadata: the frame size and a pointer to
+Each allocation frame consists of 2 usizes of metadata: the frame size and a pointer to
 the next free node. This enables some rudimentary debugging as well as a simple lookup
 when we only have the allocated data-block (especially important for C compatibility).
 
@@ -125,5 +125,5 @@ to toss back as free nodes. This is O(log k) which is O(1).
 For allocations >64K, we iterate through list 0 to find a matching size, O(n).
 Free oversized frames are never divided into smaller allocations.
 
-ZeeAlloc only supports pointer alignment up to 2x word size — 8 bytes in wasm. There
+ZeeAlloc only supports pointer alignment up to 2x usize — 8 bytes in wasm. There
 are a few ideas to expand this to up-to half page_size but nothing concrete yet.
