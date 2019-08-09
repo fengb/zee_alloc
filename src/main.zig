@@ -35,7 +35,13 @@ const FrameNode = packed struct {
         return node;
     }
 
-    pub fn restore(payload: [*]u8) !*FrameNode {
+    pub fn restoreAddr(addr: usize) !*FrameNode {
+        const node = @intToPtr(*FrameNode, addr);
+        try node.validate();
+        return node;
+    }
+
+    pub fn restorePayload(payload: [*]u8) !*FrameNode {
         const node = @fieldParentPtr(FrameNode, "payload", @ptrCast(*[min_payload_size]u8, payload));
         try node.validate();
         return node;
@@ -90,7 +96,7 @@ const FreeList = struct {
             iter = node.next;
         }) {
             if (node == target) {
-                self.removeAfter(prev);
+                _ = self.removeAfter(prev);
                 return;
             }
         }
@@ -184,7 +190,35 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             return node.payloadSlice(0, target_size);
         }
 
-        fn free(self: *Self, node: *FrameNode) void {
+        fn findBuddyAddr(self: *Self, addr: usize, frame_size: usize) usize {
+            // 16: [0, 16], [32, 48]
+            // 32: [0, 32], [64, 96]
+            const ref = addr / frame_size;
+            if (ref % 2 == 0) {
+                return addr + frame_size;
+            } else {
+                return addr - frame_size;
+            }
+        }
+
+        fn free(self: *Self, target: *FrameNode) void {
+            var node = target;
+            while (node.frame_size < page_size) {
+                const node_addr = @ptrToInt(node);
+                const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
+                const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
+                if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
+                    break;
+                }
+
+                self.freeListOfSize(buddy.frame_size).remove(buddy);
+
+                if (buddy_addr < node_addr) {
+                    node = buddy;
+                }
+                node.frame_size *= 2;
+            }
+
             self.freeListOfSize(node.frame_size).prepend(node);
         }
 
@@ -222,7 +256,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             }
 
             const current_node = if (old_mem.len == 0) null else blk: {
-                const node = FrameNode.restore(old_mem.ptr) catch unreachable;
+                const node = FrameNode.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
                     return @noInlineCall(self.asMinimumData, node, new_size);
                 }
@@ -242,7 +276,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
-            const node = FrameNode.restore(old_mem.ptr) catch unreachable;
+            const node = FrameNode.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
                 std.debug.assert(node.isAllocated());
                 self.free(node);
@@ -355,10 +389,6 @@ test "ZeeAlloc internals" {
         testing.expectEqual(prev_free_nodes - 1, zee_alloc.debugCountAll());
         prev_free_nodes = zee_alloc.debugCountAll();
 
-        zee_alloc.allocator.destroy(small2);
-        testing.expectEqual(prev_free_nodes + 1, zee_alloc.debugCountAll());
-        prev_free_nodes = zee_alloc.debugCountAll();
-
         var big1 = try zee_alloc.allocator.alloc(u8, 127 * 1024);
         testing.expectEqual(prev_free_nodes, zee_alloc.debugCountAll());
         zee_alloc.allocator.free(big1);
@@ -395,7 +425,7 @@ test "ZeeAlloc internals" {
         var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
         const payload = try zee_alloc.allocator.alloc(u8, 1);
-        const frame = try FrameNode.restore(payload.ptr);
+        const frame = try FrameNode.restorePayload(payload.ptr);
         testing.expect(frame.isAllocated());
 
         zee_alloc.allocator.free(payload);
