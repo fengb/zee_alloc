@@ -366,6 +366,16 @@ test "ZeeAlloc internals" {
         testing.expectEqual(usize(1), zee_alloc.debugCount(oversized_index));
     }
 
+    @"coalesce": {
+        var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
+        var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
+
+        var small = try zee_alloc.allocator.create(u8);
+        testing.expect(zee_alloc.debugCountAll() > 1);
+        zee_alloc.allocator.destroy(small);
+        testing.expectEqual(usize(1), zee_alloc.debugCountAll());
+    }
+
     @"realloc reuses frame if possible": {
         var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
         var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
