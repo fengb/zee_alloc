@@ -82,6 +82,20 @@ const FreeList = struct {
         self.first = node;
     }
 
+    pub fn remove(self: *FreeList, target: *FrameNode) void {
+        var prev: ?*FrameNode = null;
+        var iter = self.first;
+        while (iter) |node| : ({
+            prev = iter;
+            iter = node.next;
+        }) {
+            if (node == target) {
+                self.removeAfter(prev);
+                return;
+            }
+        }
+    }
+
     pub fn removeAfter(self: *FreeList, ref: ?*FrameNode) ?*FrameNode {
         const first_node = self.first orelse return null;
         if (ref) |ref_node| {
