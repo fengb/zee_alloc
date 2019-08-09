@@ -132,8 +132,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             var search_size = self.padToFrameSize(memsize);
 
             while (true) : (search_size *= 2) {
-                var i = self.freeListIndex(search_size);
-
+                const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
                 var prev: ?*FrameNode = null;
                 var iter = free_list.first;
@@ -161,11 +160,10 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
             var sub_frame_size = std.math.min(node.frame_size / 2, page_size);
             while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
-                const i = self.freeListIndex(sub_frame_size);
                 const start = node.payloadSize() - sub_frame_size;
                 const sub_frame_data = node.payloadSlice(start, node.payloadSize());
                 const sub_node = FrameNode.init(sub_frame_data);
-                self.free_lists[i].prepend(sub_node);
+                self.freeListOfSize(sub_frame_size).prepend(sub_node);
                 node.frame_size = sub_frame_size;
             }
 
@@ -173,8 +171,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn free(self: *Self, node: *FrameNode) void {
-            const i = self.freeListIndex(node.frame_size);
-            self.free_lists[i].prepend(node);
+            self.freeListOfSize(node.frame_size).prepend(node);
         }
 
         fn padToFrameSize(self: *Self, memsize: usize) usize {
@@ -186,6 +183,11 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             } else {
                 return std.mem.alignForward(meta_memsize, page_size);
             }
+        }
+
+        fn freeListOfSize(self: *Self, frame_size: usize) *FreeList {
+            const i = self.freeListIndex(frame_size);
+            return &self.free_lists[i];
         }
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
