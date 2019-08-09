@@ -6,8 +6,6 @@ const meta_size = 2 * @sizeOf(usize);
 pub const min_payload_size = meta_size;
 pub const min_frame_size = meta_size + min_payload_size;
 
-const allocated_signal = @intToPtr(*FrameNode, std.math.maxInt(usize));
-
 // https://github.com/ziglang/zig/issues/2426
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
     if (value <= 2) return value;
@@ -22,6 +20,7 @@ fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
 // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
 const FrameNode = packed struct {
     const alignment = 2 * @sizeOf(usize);
+    const allocated_signal = @intToPtr(*FrameNode, std.math.maxInt(usize));
 
     frame_size: usize,
     next: ?*FrameNode,
@@ -49,6 +48,14 @@ const FrameNode = packed struct {
         if (!isFrameSize(self.frame_size, std.mem.page_size)) {
             return error.UnalignedMemory;
         }
+    }
+
+    pub fn isAllocated(self: *FrameNode) bool {
+        return self.next == allocated_signal;
+    }
+
+    pub fn markAllocated(self: *FrameNode) void {
+        self.next = allocated_signal;
     }
 
     pub fn payloadSize(self: *FrameNode) usize {
@@ -207,7 +214,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             };
 
             const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
-            new_node.next = allocated_signal;
+            new_node.markAllocated();
             const result = @noInlineCall(self.asMinimumData, new_node, new_size);
 
             if (current_node) |node| {
@@ -221,7 +228,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             const node = FrameNode.restore(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
-                std.debug.assert(node.next == allocated_signal);
+                std.debug.assert(node.isAllocated());
                 self.free(node);
                 return [_]u8{};
             } else {
@@ -363,10 +370,10 @@ test "ZeeAlloc internals" {
 
         const payload = try zee_alloc.allocator.alloc(u8, 1);
         const frame = try FrameNode.restore(payload.ptr);
-        testing.expectEqual(frame.next, allocated_signal);
+        testing.expect(frame.isAllocated());
 
         zee_alloc.allocator.free(payload);
-        testing.expect(frame.next != allocated_signal);
+        testing.expect(!frame.isAllocated());
     }
 }
 
