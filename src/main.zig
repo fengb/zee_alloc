@@ -44,18 +44,36 @@ const FrameNode = packed struct {
 
     const allocated_signal = std.math.maxInt(PackedNode.upacked);
 
-    frame_size: usize,
+    prev: PackedNode,
     next: PackedNode,
-
     // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
     payload: [min_payload_size]u8,
 
+    pub fn frameSize(self: *FrameNode) usize {
+        if (self.prev.extra == 0) {
+            return usize(1) << self.next.extra;
+        } else {
+            const multiplier = (@intCast(usize, self.prev.extra) << extra_bits) + self.next.extra;
+            return multiplier * std.mem.page_size;
+        }
+    }
+
+    pub fn setFrameSize(self: *FrameNode, size: usize) void {
+        std.debug.assert(isFrameSize(size, std.mem.page_size));
+        if (size <= std.mem.page_size) {
+            self.prev.extra = 0;
+            self.next.extra = @intCast(u4, std.math.log2_int(usize, size));
+        } else {
+            const multiplier = size / std.mem.page_size;
+            self.prev.extra = @intCast(u4, multiplier >> extra_bits);
+            self.next.extra = @intCast(u4, multiplier & ((usize(1) << extra_bits) - 1));
+        }
+    }
+
     pub fn init(raw_bytes: []u8) *FrameNode {
         const node = @ptrCast(*FrameNode, raw_bytes.ptr);
-        node.frame_size = raw_bytes.len;
-        node.next = undefined;
-        node.validate() catch unreachable;
-        return node;
+        node.setFrameSize(raw_bytes.len);
+        return @alignCast(alignment, node);
     }
 
     pub fn restoreAddr(addr: usize) !*FrameNode {
@@ -74,7 +92,7 @@ const FrameNode = packed struct {
         if (@ptrToInt(self) % alignment != 0) {
             return error.UnalignedMemory;
         }
-        if (!isFrameSize(self.frame_size, std.mem.page_size)) {
+        if (!isFrameSize(self.frameSize(), std.mem.page_size)) {
             return error.UnalignedMemory;
         }
     }
@@ -88,7 +106,7 @@ const FrameNode = packed struct {
     }
 
     pub fn payloadSize(self: *FrameNode) usize {
-        return self.frame_size - meta_size;
+        return self.frameSize() - meta_size;
     }
 
     pub fn payloadSlice(self: *FrameNode, start: usize, end: usize) []u8 {
@@ -183,7 +201,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                     prev = iter;
                     iter = node.next.get();
                 }) {
-                    if (node.frame_size == search_size) {
+                    if (node.frameSize() == search_size) {
                         const removed = free_list.removeAfter(prev);
                         std.debug.assert(removed == node);
                         return node;
@@ -201,13 +219,13 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
             const target_frame_size = self.padToFrameSize(target_size);
 
-            var sub_frame_size = std.math.min(node.frame_size / 2, page_size);
+            var sub_frame_size = std.math.min(node.frameSize() / 2, page_size);
             while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
                 const start = node.payloadSize() - sub_frame_size;
                 const sub_frame_data = node.payloadSlice(start, node.payloadSize());
                 const sub_node = FrameNode.init(sub_frame_data);
                 self.freeListOfSize(sub_frame_size).prepend(sub_node);
-                node.frame_size = sub_frame_size;
+                node.setFrameSize(sub_frame_size);
             }
 
             return node.payloadSlice(0, target_size);
@@ -226,23 +244,23 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         fn free(self: *Self, target: *FrameNode) void {
             var node = target;
-            while (node.frame_size < page_size) {
+            while (node.frameSize() < page_size) {
                 const node_addr = @ptrToInt(node);
-                const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
+                const buddy_addr = self.findBuddyAddr(node_addr, node.frameSize());
                 const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
-                if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
+                if (buddy.isAllocated() or buddy.frameSize() != node.frameSize()) {
                     break;
                 }
 
-                self.freeListOfSize(buddy.frame_size).remove(buddy);
+                self.freeListOfSize(buddy.frameSize()).remove(buddy);
 
                 if (buddy_addr < node_addr) {
                     node = buddy;
                 }
-                node.frame_size *= 2;
+                node.setFrameSize(node.frameSize() * 2);
             }
 
-            self.freeListOfSize(node.frame_size).prepend(node);
+            self.freeListOfSize(node.frameSize()).prepend(node);
         }
 
         fn padToFrameSize(self: *Self, memsize: usize) usize {
