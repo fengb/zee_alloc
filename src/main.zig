@@ -118,40 +118,33 @@ const FrameNode = packed struct {
 };
 
 const FreeList = struct {
-    first: ?*FrameNode,
-
-    pub fn init() FreeList {
-        return FreeList{ .first = null };
-    }
+    first: ?*FrameNode = null,
+    last: ?*FrameNode = null,
 
     pub fn prepend(self: *FreeList, node: *FrameNode) void {
-        node.next.set(self.first);
+        if (self.first) |first| {
+            node.next.set(first);
+            first.prev.set(node);
+        } else {
+            // Empty
+            node.next.set(null);
+            self.last = node;
+        }
+        node.prev.set(null);
         self.first = node;
     }
 
-    pub fn remove(self: *FreeList, target: *FrameNode) void {
-        var prev: ?*FrameNode = null;
-        var iter = self.first;
-        while (iter) |node| : ({
-            prev = iter;
-            iter = node.next.get();
-        }) {
-            if (node == target) {
-                _ = self.removeAfter(prev);
-                return;
-            }
-        }
-    }
-
-    pub fn removeAfter(self: *FreeList, ref: ?*FrameNode) ?*FrameNode {
-        const first_node = self.first orelse return null;
-        if (ref) |ref_node| {
-            const next_node = ref_node.next.get() orelse return null;
-            ref_node.next.packed_addr = next_node.next.packed_addr;
-            return next_node;
+    pub fn remove(self: *FreeList, node: *FrameNode) void {
+        if (node.prev.get()) |prev| {
+            prev.next.packed_addr = node.next.packed_addr;
         } else {
-            self.first = first_node.next.get();
-            return first_node;
+            self.first = node.next.get();
+        }
+
+        if (node.next.get()) |next| {
+            next.prev.packed_addr = node.prev.packed_addr;
+        } else {
+            self.last = node.prev.get();
         }
     }
 };
@@ -172,7 +165,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         backing_allocator: *Allocator,
 
-        free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
+        free_lists: [size_buckets]FreeList = [_]FreeList{FreeList{}} ** size_buckets,
         page_size: usize = page_size,
         allocator: Allocator = Allocator{
             .reallocFn = realloc,
@@ -195,15 +188,10 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             while (true) : (search_size *= 2) {
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
-                var prev: ?*FrameNode = null;
                 var iter = free_list.first;
-                while (iter) |node| : ({
-                    prev = iter;
-                    iter = node.next.get();
-                }) {
+                while (iter) |node| : (iter = node.next.get()) {
                     if (node.frameSize() == search_size) {
-                        const removed = free_list.removeAfter(prev);
-                        std.debug.assert(removed == node);
+                        free_list.remove(node);
                         return node;
                     }
                 }
