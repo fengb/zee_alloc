@@ -129,6 +129,11 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
     return struct {
         const Self = @This();
 
+        pub const wasm_allocator = init: {
+            var wasm = init(&wasm_page_allocator);
+            break :init &wasm.allocator;
+        };
+
         backing_allocator: *Allocator,
 
         free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
@@ -313,9 +318,9 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
 // https://github.com/ziglang/zig/issues/2291
 extern fn @"llvm.wasm.memory.grow.i32"(u32, u32) i32;
-pub const wasm_allocator = init: {
+var wasm_page_allocator = init: {
     if (builtin.arch != .wasm32) {
-        @compileError("WasmAllocator is only available for wasm32 arch");
+        @compileError("wasm allocator is only available for wasm32 arch");
     }
 
     // std.heap.wasm_allocator is designed for arbitrary sizing
@@ -341,12 +346,10 @@ pub const wasm_allocator = init: {
         }
     };
 
-    var wasm_page_allocator = Allocator{
+    break :init Allocator{
         .reallocFn = WasmPageAllocator.realloc,
         .shrinkFn = WasmPageAllocator.shrink,
     };
-    var zee_allocator = ZeeAllocDefaults.init(&wasm_page_allocator);
-    break :init &zee_allocator.allocator;
 };
 
 // Tests
