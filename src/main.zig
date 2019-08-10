@@ -19,11 +19,34 @@ fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
 
 // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
 const FrameNode = packed struct {
-    const alignment = 2 * @sizeOf(usize);
-    const allocated_signal = @intToPtr(*FrameNode, std.math.maxInt(usize));
+    const extra_bits = 4;
+    const alignment = extra_bits * @sizeOf(usize);
+
+    const PackedNode = packed struct {
+        const Self = @This();
+        const upacked = @IntType(false, 8 * @sizeOf(usize) - extra_bits);
+
+        packed_addr: upacked,
+        extra: @IntType(false, extra_bits),
+
+        fn get(self: Self) ?*FrameNode {
+            if (self.packed_addr != 0) {
+                return FrameNode.restoreAddr(@intCast(usize, self.packed_addr) << extra_bits) catch unreachable;
+            } else {
+                return null;
+            }
+        }
+
+        fn set(self: *Self, frame: ?*FrameNode) void {
+            self.packed_addr = @intCast(upacked, @ptrToInt(frame) >> extra_bits);
+        }
+    };
+
+    const allocated_signal = std.math.maxInt(PackedNode.upacked);
 
     frame_size: usize,
-    next: ?*FrameNode,
+    next: PackedNode,
+
     // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
     payload: [min_payload_size]u8,
 
@@ -57,11 +80,11 @@ const FrameNode = packed struct {
     }
 
     pub fn isAllocated(self: *FrameNode) bool {
-        return self.next == allocated_signal;
+        return self.next.packed_addr == allocated_signal;
     }
 
     pub fn markAllocated(self: *FrameNode) void {
-        self.next = allocated_signal;
+        self.next.packed_addr = allocated_signal;
     }
 
     pub fn payloadSize(self: *FrameNode) usize {
@@ -84,7 +107,7 @@ const FreeList = struct {
     }
 
     pub fn prepend(self: *FreeList, node: *FrameNode) void {
-        node.next = self.first;
+        node.next.set(self.first);
         self.first = node;
     }
 
@@ -93,7 +116,7 @@ const FreeList = struct {
         var iter = self.first;
         while (iter) |node| : ({
             prev = iter;
-            iter = node.next;
+            iter = node.next.get();
         }) {
             if (node == target) {
                 _ = self.removeAfter(prev);
@@ -105,11 +128,11 @@ const FreeList = struct {
     pub fn removeAfter(self: *FreeList, ref: ?*FrameNode) ?*FrameNode {
         const first_node = self.first orelse return null;
         if (ref) |ref_node| {
-            const next_node = ref_node.next orelse return null;
-            ref_node.next = next_node.next;
+            const next_node = ref_node.next.get() orelse return null;
+            ref_node.next.packed_addr = next_node.next.packed_addr;
             return next_node;
         } else {
-            self.first = first_node.next;
+            self.first = first_node.next.get();
             return first_node;
         }
     }
@@ -158,7 +181,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 var iter = free_list.first;
                 while (iter) |node| : ({
                     prev = iter;
-                    iter = node.next;
+                    iter = node.next.get();
                 }) {
                     if (node.frame_size == search_size) {
                         const removed = free_list.removeAfter(prev);
@@ -289,7 +312,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         fn debugCount(self: *Self, index: usize) usize {
             var count = usize(0);
             var iter = self.free_lists[index].first;
-            while (iter) |node| : (iter = node.next) {
+            while (iter) |node| : (iter = node.next.get()) {
                 count += 1;
             }
             return count;
