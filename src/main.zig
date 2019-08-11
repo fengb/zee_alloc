@@ -118,12 +118,17 @@ const FreeList = struct {
 const oversized_index = 0;
 const page_index = 1;
 
-pub const ZeeAllocDefaults = ZeeAlloc(std.mem.page_size);
+pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
-pub fn ZeeAlloc(comptime page_size: usize) type {
-    std.debug.assert(page_size >= std.mem.page_size);
+const Config = struct {
+    page_size: usize = std.mem.page_size,
+};
 
-    const inv_bitsize_ref = page_index + std.math.log2_int(usize, page_size);
+pub fn ZeeAlloc(comptime config: Config) type {
+    std.debug.assert(config.page_size >= std.mem.page_size);
+    std.debug.assert(std.math.isPowerOfTwo(config.page_size));
+
+    const inv_bitsize_ref = page_index + std.math.log2_int(usize, config.page_size);
     const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 oversized list
 
     return struct {
@@ -136,8 +141,8 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         backing_allocator: *Allocator,
 
+        page_size: usize = config.page_size,
         free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
-        page_size: usize = page_size,
         allocator: Allocator = Allocator{
             .reallocFn = realloc,
             .shrinkFn = shrink,
@@ -148,8 +153,8 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn allocNode(self: *Self, memsize: usize) !*FrameNode {
-            const alloc_size = std.mem.alignForward(memsize + meta_size, page_size);
-            const rawData = try self.backing_allocator.alignedAlloc(u8, page_size, alloc_size);
+            const alloc_size = std.mem.alignForward(memsize + meta_size, config.page_size);
+            const rawData = try self.backing_allocator.alignedAlloc(u8, config.page_size, alloc_size);
             return FrameNode.init(rawData);
         }
 
@@ -183,7 +188,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
             const target_frame_size = self.padToFrameSize(target_size);
 
-            var sub_frame_size = std.math.min(node.frame_size / 2, page_size);
+            var sub_frame_size = std.math.min(node.frame_size / 2, config.page_size);
             while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
                 const start = node.payloadSize() - sub_frame_size;
                 const sub_frame_data = node.payloadSlice(start, node.payloadSize());
@@ -208,7 +213,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
 
         fn free(self: *Self, target: *FrameNode) void {
             var node = target;
-            while (node.frame_size < page_size) {
+            while (node.frame_size < config.page_size) {
                 const node_addr = @ptrToInt(node);
                 const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
                 const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
@@ -231,10 +236,10 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             const meta_memsize = memsize + meta_size;
             if (meta_memsize <= min_frame_size) {
                 return min_frame_size;
-            } else if (meta_memsize <= page_size) {
+            } else if (meta_memsize <= config.page_size) {
                 return ceilPowerOfTwo(usize, meta_memsize);
             } else {
-                return std.mem.alignForward(meta_memsize, page_size);
+                return std.mem.alignForward(meta_memsize, config.page_size);
             }
         }
 
@@ -244,8 +249,8 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         }
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
-            std.debug.assert(isFrameSize(frame_size, page_size));
-            if (frame_size > page_size) {
+            std.debug.assert(isFrameSize(frame_size, config.page_size));
+            if (frame_size > config.page_size) {
                 return oversized_index;
             } else if (frame_size <= min_frame_size) {
                 return self.free_lists.len - 1;
