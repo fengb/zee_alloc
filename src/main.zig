@@ -57,12 +57,10 @@ const FrameNode = packed struct {
             return @intCast(uextra, extra_mask & self.raw);
         }
 
-        fn setExtra(self: *Self, extra: uextra) void {
+        fn setExtra(self: *Self, extra: usize) void {
             self.raw = self.getAddr() + extra;
         }
     };
-
-    const allocated_mask = std.math.maxInt(usize) & PackedNode.addr_mask;
 
     prev: PackedNode,
     next: PackedNode,
@@ -70,10 +68,12 @@ const FrameNode = packed struct {
     payload: [min_payload_size]u8,
 
     pub fn frameSize(self: *FrameNode) usize {
-        if (self.prev.getExtra() == 0) {
-            return usize(1) << self.next.getExtra();
+        const prevExtra = self.prev.getExtra();
+        const nextExtra = self.prev.getExtra();
+        if (prevExtra == 0) {
+            return usize(1) << nextExtra;
         } else {
-            const multiplier = (@intCast(usize, self.prev.getExtra()) << extra_bits) + self.next.getExtra();
+            const multiplier = (@intCast(usize, prevExtra) << extra_bits) + nextExtra;
             return multiplier * std.mem.page_size;
         }
     }
@@ -82,11 +82,11 @@ const FrameNode = packed struct {
         std.debug.assert(isFrameSize(size, std.mem.page_size));
         if (size <= std.mem.page_size) {
             self.prev.setExtra(0);
-            self.next.setExtra(@intCast(u4, std.math.log2_int(usize, size)));
+            self.next.setExtra(std.math.log2_int(usize, size));
         } else {
             const multiplier = size / std.mem.page_size;
-            self.prev.setExtra(@intCast(u4, multiplier >> extra_bits));
-            self.next.setExtra(@intCast(u4, multiplier & ((usize(1) << extra_bits) - 1)));
+            self.prev.setExtra(multiplier >> extra_bits);
+            self.next.setExtra(multiplier & ((usize(1) << extra_bits) - 1));
         }
     }
 
@@ -118,11 +118,11 @@ const FrameNode = packed struct {
     }
 
     pub fn isAllocated(self: *FrameNode) bool {
-        return self.next.raw & allocated_mask == allocated_mask;
+        return self.next.getAddr() == PackedNode.addr_mask;
     }
 
     pub fn markAllocated(self: *FrameNode) void {
-        self.next.setAddr(allocated_mask);
+        self.next.setAddr(PackedNode.addr_mask);
     }
 
     pub fn payloadSize(self: *FrameNode) usize {
@@ -155,16 +155,19 @@ const FreeList = struct {
     }
 
     pub fn remove(self: *FreeList, node: *FrameNode) void {
-        if (node.prev.getPtr()) |prev| {
-            prev.next.setAddr(node.next.getAddr());
+        const prevPtr = node.prev.getPtr();
+        const nextPtr = node.next.getPtr();
+
+        if (prevPtr) |prev| {
+            prev.next.setPtr(nextPtr);
         } else {
-            self.first = node.next.getPtr();
+            self.first = nextPtr;
         }
 
-        if (node.next.getPtr()) |next| {
-            next.prev.setAddr(node.prev.getAddr());
+        if (nextPtr) |next| {
+            next.prev.setPtr(prevPtr);
         } else {
-            self.last = node.prev.getPtr();
+            self.last = prevPtr;
         }
     }
 };
@@ -250,22 +253,25 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             }
         }
 
-        fn free(self: *Self, targetPtr: *FrameNode) void {
-            var node = targetPtr;
-            while (node.frameSize() < page_size) {
+        fn free(self: *Self, target: *FrameNode) void {
+            var node = target;
+            var frame_size = node.frameSize();
+            while (frame_size < page_size) {
                 const node_addr = @ptrToInt(node);
-                const buddy_addr = self.findBuddyAddr(node_addr, node.frameSize());
+                const buddy_addr = self.findBuddyAddr(node_addr, frame_size);
                 const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
-                if (buddy.isAllocated() or buddy.frameSize() != node.frameSize()) {
+                if (buddy.isAllocated() or buddy.frameSize() != frame_size) {
                     break;
                 }
 
-                self.freeListOfSize(buddy.frameSize()).remove(buddy);
+                self.freeListOfSize(frame_size).remove(buddy);
 
                 if (buddy_addr < node_addr) {
                     node = buddy;
                 }
-                node.setFrameSize(node.frameSize() * 2);
+
+                frame_size *= 2;
+                node.setFrameSize(frame_size);
             }
 
             self.freeListOfSize(node.frameSize()).prepend(node);
