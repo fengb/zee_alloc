@@ -24,25 +24,45 @@ const FrameNode = packed struct {
 
     const PackedNode = packed struct {
         const Self = @This();
-        const upacked = @IntType(false, 8 * @sizeOf(usize) - extra_bits);
+        const uextra = @IntType(false, extra_bits);
 
-        packed_addr: upacked,
-        extra: @IntType(false, extra_bits),
+        const extra_mask = usize(1 << extra_bits) - 1;
+        const addr_mask = ~extra_mask;
 
-        fn get(self: Self) ?*FrameNode {
-            if (self.packed_addr != 0) {
-                return FrameNode.restoreAddr(@intCast(usize, self.packed_addr) << extra_bits) catch unreachable;
+        raw: usize,
+
+        fn getPtr(self: Self) ?*FrameNode {
+            const addr = self.getAddr();
+            if (addr != 0) {
+                return FrameNode.restoreAddr(addr) catch unreachable;
             } else {
                 return null;
             }
         }
 
-        fn set(self: *Self, frame: ?*FrameNode) void {
-            self.packed_addr = @intCast(upacked, @ptrToInt(frame) >> extra_bits);
+        fn setPtr(self: *Self, frame: ?*FrameNode) void {
+            return self.setAddr(@ptrToInt(frame));
+        }
+
+        fn getAddr(self: Self) usize {
+            return addr_mask & self.raw;
+        }
+
+        fn setAddr(self: *Self, addr: usize) void {
+            std.debug.assert(extra_mask & addr == 0);
+            self.raw = addr + self.getExtra();
+        }
+
+        fn getExtra(self: Self) uextra {
+            return @intCast(uextra, extra_mask & self.raw);
+        }
+
+        fn setExtra(self: *Self, extra: uextra) void {
+            self.raw = self.getAddr() + extra;
         }
     };
 
-    const allocated_signal = std.math.maxInt(PackedNode.upacked);
+    const allocated_mask = std.math.maxInt(usize) & PackedNode.addr_mask;
 
     prev: PackedNode,
     next: PackedNode,
@@ -50,10 +70,10 @@ const FrameNode = packed struct {
     payload: [min_payload_size]u8,
 
     pub fn frameSize(self: *FrameNode) usize {
-        if (self.prev.extra == 0) {
-            return usize(1) << self.next.extra;
+        if (self.prev.getExtra() == 0) {
+            return usize(1) << self.next.getExtra();
         } else {
-            const multiplier = (@intCast(usize, self.prev.extra) << extra_bits) + self.next.extra;
+            const multiplier = (@intCast(usize, self.prev.getExtra()) << extra_bits) + self.next.getExtra();
             return multiplier * std.mem.page_size;
         }
     }
@@ -61,12 +81,12 @@ const FrameNode = packed struct {
     pub fn setFrameSize(self: *FrameNode, size: usize) void {
         std.debug.assert(isFrameSize(size, std.mem.page_size));
         if (size <= std.mem.page_size) {
-            self.prev.extra = 0;
-            self.next.extra = @intCast(u4, std.math.log2_int(usize, size));
+            self.prev.setExtra(0);
+            self.next.setExtra(@intCast(u4, std.math.log2_int(usize, size)));
         } else {
             const multiplier = size / std.mem.page_size;
-            self.prev.extra = @intCast(u4, multiplier >> extra_bits);
-            self.next.extra = @intCast(u4, multiplier & ((usize(1) << extra_bits) - 1));
+            self.prev.setExtra(@intCast(u4, multiplier >> extra_bits));
+            self.next.setExtra(@intCast(u4, multiplier & ((usize(1) << extra_bits) - 1)));
         }
     }
 
@@ -98,11 +118,11 @@ const FrameNode = packed struct {
     }
 
     pub fn isAllocated(self: *FrameNode) bool {
-        return self.next.packed_addr == allocated_signal;
+        return self.next.raw & allocated_mask == allocated_mask;
     }
 
     pub fn markAllocated(self: *FrameNode) void {
-        self.next.packed_addr = allocated_signal;
+        self.next.setAddr(allocated_mask);
     }
 
     pub fn payloadSize(self: *FrameNode) usize {
@@ -123,28 +143,28 @@ const FreeList = struct {
 
     pub fn prepend(self: *FreeList, node: *FrameNode) void {
         if (self.first) |first| {
-            node.next.set(first);
-            first.prev.set(node);
+            node.next.setPtr(first);
+            first.prev.setPtr(node);
         } else {
             // Empty
-            node.next.set(null);
+            node.next.setPtr(null);
             self.last = node;
         }
-        node.prev.set(null);
+        node.prev.setPtr(null);
         self.first = node;
     }
 
     pub fn remove(self: *FreeList, node: *FrameNode) void {
-        if (node.prev.get()) |prev| {
-            prev.next.packed_addr = node.next.packed_addr;
+        if (node.prev.getPtr()) |prev| {
+            prev.next.setAddr(node.next.getAddr());
         } else {
-            self.first = node.next.get();
+            self.first = node.next.getPtr();
         }
 
-        if (node.next.get()) |next| {
-            next.prev.packed_addr = node.prev.packed_addr;
+        if (node.next.getPtr()) |next| {
+            next.prev.setAddr(node.prev.getAddr());
         } else {
-            self.last = node.prev.get();
+            self.last = node.prev.getPtr();
         }
     }
 };
@@ -189,7 +209,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
                 var iter = free_list.first;
-                while (iter) |node| : (iter = node.next.get()) {
+                while (iter) |node| : (iter = node.next.getPtr()) {
                     if (node.frameSize() == search_size) {
                         free_list.remove(node);
                         return node;
@@ -230,8 +250,8 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
             }
         }
 
-        fn free(self: *Self, target: *FrameNode) void {
-            var node = target;
+        fn free(self: *Self, targetPtr: *FrameNode) void {
+            var node = targetPtr;
             while (node.frameSize() < page_size) {
                 const node_addr = @ptrToInt(node);
                 const buddy_addr = self.findBuddyAddr(node_addr, node.frameSize());
@@ -318,7 +338,7 @@ pub fn ZeeAlloc(comptime page_size: usize) type {
         fn debugCount(self: *Self, index: usize) usize {
             var count = usize(0);
             var iter = self.free_lists[index].first;
-            while (iter) |node| : (iter = node.next.get()) {
+            while (iter) |node| : (iter = node.next.getPtr()) {
                 count += 1;
             }
             return count;
