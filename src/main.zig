@@ -13,108 +13,6 @@ fn ceilPowerOfTwo(comptime T: type, value: T) T {
     return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
 }
 
-fn isFrameSize(memsize: usize, comptime page_size: usize) bool {
-    return memsize % page_size == 0 or std.math.isPowerOfTwo(memsize);
-}
-
-// Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
-const FrameNode = packed struct {
-    const alignment = 2 * @sizeOf(usize);
-    const allocated_signal = @intToPtr(*FrameNode, std.math.maxInt(usize));
-
-    frame_size: usize,
-    next: ?*FrameNode,
-    // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
-    payload: [min_payload_size]u8,
-
-    pub fn init(raw_bytes: []u8) *FrameNode {
-        const node = @ptrCast(*FrameNode, raw_bytes.ptr);
-        node.frame_size = raw_bytes.len;
-        node.next = undefined;
-        node.validate() catch unreachable;
-        return node;
-    }
-
-    pub fn restoreAddr(addr: usize) !*FrameNode {
-        const node = @intToPtr(*FrameNode, addr);
-        try node.validate();
-        return node;
-    }
-
-    pub fn restorePayload(payload: [*]u8) !*FrameNode {
-        const node = @fieldParentPtr(FrameNode, "payload", @ptrCast(*[min_payload_size]u8, payload));
-        try node.validate();
-        return node;
-    }
-
-    pub fn validate(self: *FrameNode) !void {
-        if (@ptrToInt(self) % alignment != 0) {
-            return error.UnalignedMemory;
-        }
-        if (!isFrameSize(self.frame_size, std.mem.page_size)) {
-            return error.UnalignedMemory;
-        }
-    }
-
-    pub fn isAllocated(self: *FrameNode) bool {
-        return self.next == allocated_signal;
-    }
-
-    pub fn markAllocated(self: *FrameNode) void {
-        self.next = allocated_signal;
-    }
-
-    pub fn payloadSize(self: *FrameNode) usize {
-        return self.frame_size - meta_size;
-    }
-
-    pub fn payloadSlice(self: *FrameNode, start: usize, end: usize) []u8 {
-        std.debug.assert(start <= end);
-        std.debug.assert(end <= self.payloadSize());
-        const ptr = @ptrCast([*]u8, &self.payload);
-        return ptr[start..end];
-    }
-};
-
-const FreeList = struct {
-    first: ?*FrameNode,
-
-    pub fn init() FreeList {
-        return FreeList{ .first = null };
-    }
-
-    pub fn prepend(self: *FreeList, node: *FrameNode) void {
-        node.next = self.first;
-        self.first = node;
-    }
-
-    pub fn remove(self: *FreeList, target: *FrameNode) void {
-        var prev: ?*FrameNode = null;
-        var iter = self.first;
-        while (iter) |node| : ({
-            prev = iter;
-            iter = node.next;
-        }) {
-            if (node == target) {
-                _ = self.removeAfter(prev);
-                return;
-            }
-        }
-    }
-
-    pub fn removeAfter(self: *FreeList, ref: ?*FrameNode) ?*FrameNode {
-        const first_node = self.first orelse return null;
-        if (ref) |ref_node| {
-            const next_node = ref_node.next orelse return null;
-            ref_node.next = next_node.next;
-            return next_node;
-        } else {
-            self.first = first_node.next;
-            return first_node;
-        }
-    }
-};
-
 const oversized_index = 0;
 const page_index = 1;
 
@@ -157,6 +55,108 @@ pub fn ZeeAlloc(comptime config: Config) type {
     const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 oversized list
 
     return struct {
+        // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
+        const Frame = packed struct {
+            const alignment = 2 * @sizeOf(usize);
+            const allocated_signal = @intToPtr(*Frame, std.math.maxInt(usize));
+
+            frame_size: usize,
+            next: ?*Frame,
+            // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
+            payload: [min_payload_size]u8,
+
+            fn isCorrectSize(memsize: usize) bool {
+                return memsize % config.page_size == 0 or std.math.isPowerOfTwo(memsize);
+            }
+
+            pub fn init(raw_bytes: []u8) *Frame {
+                const node = @ptrCast(*Frame, raw_bytes.ptr);
+                node.frame_size = raw_bytes.len;
+                node.next = undefined;
+                node.validate() catch unreachable;
+                return node;
+            }
+
+            pub fn restoreAddr(addr: usize) !*Frame {
+                const node = @intToPtr(*Frame, addr);
+                try node.validate();
+                return node;
+            }
+
+            pub fn restorePayload(payload: [*]u8) !*Frame {
+                const node = @fieldParentPtr(Frame, "payload", @ptrCast(*[min_payload_size]u8, payload));
+                try node.validate();
+                return node;
+            }
+
+            pub fn validate(self: *Frame) !void {
+                if (@ptrToInt(self) % alignment != 0) {
+                    return error.UnalignedMemory;
+                }
+                if (!Frame.isCorrectSize(self.frame_size)) {
+                    return error.UnalignedMemory;
+                }
+            }
+
+            pub fn isAllocated(self: *Frame) bool {
+                return self.next == allocated_signal;
+            }
+
+            pub fn markAllocated(self: *Frame) void {
+                self.next = allocated_signal;
+            }
+
+            pub fn payloadSize(self: *Frame) usize {
+                return self.frame_size - meta_size;
+            }
+
+            pub fn payloadSlice(self: *Frame, start: usize, end: usize) []u8 {
+                std.debug.assert(start <= end);
+                std.debug.assert(end <= self.payloadSize());
+                const ptr = @ptrCast([*]u8, &self.payload);
+                return ptr[start..end];
+            }
+        };
+
+        const FreeList = struct {
+            first: ?*Frame,
+
+            pub fn init() FreeList {
+                return FreeList{ .first = null };
+            }
+
+            pub fn prepend(self: *FreeList, node: *Frame) void {
+                node.next = self.first;
+                self.first = node;
+            }
+
+            pub fn remove(self: *FreeList, target: *Frame) void {
+                var prev: ?*Frame = null;
+                var iter = self.first;
+                while (iter) |node| : ({
+                    prev = iter;
+                    iter = node.next;
+                }) {
+                    if (node == target) {
+                        _ = self.removeAfter(prev);
+                        return;
+                    }
+                }
+            }
+
+            pub fn removeAfter(self: *FreeList, ref: ?*Frame) ?*Frame {
+                const first_node = self.first orelse return null;
+                if (ref) |ref_node| {
+                    const next_node = ref_node.next orelse return null;
+                    ref_node.next = next_node.next;
+                    return next_node;
+                } else {
+                    self.first = first_node.next;
+                    return first_node;
+                }
+            }
+        };
+
         const Self = @This();
 
         pub const wasm_allocator = init: {
@@ -177,19 +177,19 @@ pub fn ZeeAlloc(comptime config: Config) type {
             return Self{ .backing_allocator = backing_allocator };
         }
 
-        fn allocNode(self: *Self, memsize: usize) !*FrameNode {
+        fn allocNode(self: *Self, memsize: usize) !*Frame {
             const alloc_size = std.mem.alignForward(memsize + meta_size, config.page_size);
             const rawData = try self.backing_allocator.alignedAlloc(u8, config.page_size, alloc_size);
-            return FrameNode.init(rawData);
+            return Frame.init(rawData);
         }
 
-        fn findFreeNode(self: *Self, memsize: usize) ?*FrameNode {
+        fn findFreeNode(self: *Self, memsize: usize) ?*Frame {
             var search_size = self.padToFrameSize(memsize);
 
             while (true) : (search_size *= 2) {
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
-                var prev: ?*FrameNode = null;
+                var prev: ?*Frame = null;
                 var iter = free_list.first;
                 while (iter) |node| : ({
                     prev = iter;
@@ -209,7 +209,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
         }
 
-        fn asMinimumData(self: *Self, node: *FrameNode, target_size: usize) []u8 {
+        fn asMinimumData(self: *Self, node: *Frame, target_size: usize) []u8 {
             @setRuntimeSafety(comptime config.validation.internal());
             std.debug.assert(target_size <= node.payloadSize());
 
@@ -219,7 +219,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
                 const start = node.payloadSize() - sub_frame_size;
                 const sub_frame_data = node.payloadSlice(start, node.payloadSize());
-                const sub_node = FrameNode.init(sub_frame_data);
+                const sub_node = Frame.init(sub_frame_data);
                 self.freeListOfSize(sub_frame_size).prepend(sub_node);
                 node.frame_size = sub_frame_size;
             }
@@ -233,13 +233,13 @@ pub fn ZeeAlloc(comptime config: Config) type {
             return addr ^ frame_size;
         }
 
-        fn free(self: *Self, target: *FrameNode) void {
+        fn free(self: *Self, target: *Frame) void {
             var node = target;
             if (config.free_strategy == .Compact) {
                 while (node.frame_size < config.page_size) {
                     const node_addr = @ptrToInt(node);
                     const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
-                    const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
+                    const buddy = Frame.restoreAddr(buddy_addr) catch unreachable;
                     if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
                         break;
                     }
@@ -274,7 +274,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
             @setRuntimeSafety(comptime config.validation.internal());
-            std.debug.assert(isFrameSize(frame_size, config.page_size));
+            std.debug.assert(Frame.isCorrectSize(frame_size));
             if (frame_size > config.page_size) {
                 return oversized_index;
             } else if (frame_size <= min_frame_size) {
@@ -291,7 +291,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             const current_node = if (old_mem.len == 0) null else blk: {
-                const node = FrameNode.restorePayload(old_mem.ptr) catch unreachable;
+                const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
                     return @noInlineCall(self.asMinimumData, node, new_size);
                 }
@@ -311,7 +311,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
-            const node = FrameNode.restorePayload(old_mem.ptr) catch unreachable;
+            const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
                 @setRuntimeSafety(comptime config.validation.external());
                 std.debug.assert(node.isAllocated());
@@ -358,9 +358,10 @@ var wasm_page_allocator = init: {
     // We only need page sizing, and this lets us stay super small
     const WasmPageAllocator = struct {
         pub fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
+            @setRuntimeSafety(builtin.mode == .Debug);
             std.debug.assert(old_mem.len == 0); // Shouldn't be actually reallocating
             std.debug.assert(new_size % std.mem.page_size == 0); // Should only be allocating page size chunks
-            std.debug.assert(new_align == std.mem.page_size); // Should only align to page_size
+            std.debug.assert(new_align % std.mem.page_size == 0); // Should only align to page_size increments
 
             const requested_page_count = @intCast(u32, new_size / std.mem.page_size);
             const prev_page_count = @"llvm.wasm.memory.grow.i32"(0, requested_page_count);
@@ -459,7 +460,7 @@ test "ZeeAlloc internals" {
         var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
         const payload = try zee_alloc.allocator.alloc(u8, 1);
-        const frame = try FrameNode.restorePayload(payload.ptr);
+        const frame = try ZeeAllocDefaults.Frame.restorePayload(payload.ptr);
         testing.expect(frame.isAllocated());
 
         zee_alloc.allocator.free(payload);
