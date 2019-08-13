@@ -122,11 +122,30 @@ pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
 const Config = struct {
     page_size: usize = std.mem.page_size,
-    free_strategy: FreeStrategy = .compact,
+    free_strategy: FreeStrategy = .Compact,
+    validation: Validation = .External,
 
     const FreeStrategy = enum {
-        fast,
-        compact,
+        Fast,
+        Compact,
+    };
+
+    const Validation = enum {
+        Debug,
+        External,
+        Unsafe,
+
+        fn internal(self: Validation) bool {
+            return builtin.mode == .Debug;
+        }
+
+        fn external(self: Validation) bool {
+            return switch (builtin.mode) {
+                .Debug => true,
+                .ReleaseSafe => self == .External,
+                else => false,
+            };
+        }
     };
 };
 
@@ -178,6 +197,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 }) {
                     if (node.frame_size == search_size) {
                         const removed = free_list.removeAfter(prev);
+                        @setRuntimeSafety(comptime config.validation.internal());
                         std.debug.assert(removed == node);
                         return node;
                     }
@@ -190,6 +210,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn asMinimumData(self: *Self, node: *FrameNode, target_size: usize) []u8 {
+            @setRuntimeSafety(comptime config.validation.internal());
             std.debug.assert(target_size <= node.payloadSize());
 
             const target_frame_size = self.padToFrameSize(target_size);
@@ -214,7 +235,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn free(self: *Self, target: *FrameNode) void {
             var node = target;
-            if (config.free_strategy == .compact) {
+            if (config.free_strategy == .Compact) {
                 while (node.frame_size < config.page_size) {
                     const node_addr = @ptrToInt(node);
                     const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
@@ -252,6 +273,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
+            @setRuntimeSafety(comptime config.validation.internal());
             std.debug.assert(isFrameSize(frame_size, config.page_size));
             if (frame_size > config.page_size) {
                 return oversized_index;
@@ -291,6 +313,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             const node = FrameNode.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
+                @setRuntimeSafety(comptime config.validation.external());
                 std.debug.assert(node.isAllocated());
                 self.free(node);
                 return [_]u8{};
