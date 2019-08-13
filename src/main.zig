@@ -209,12 +209,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         fn findBuddyAddr(self: *Self, addr: usize, frame_size: usize) usize {
             // 16: [0, 16], [32, 48]
             // 32: [0, 32], [64, 96]
-            const ref = addr / frame_size;
-            if (ref % 2 == 0) {
-                return addr + frame_size;
-            } else {
-                return addr - frame_size;
-            }
+            return addr ^ frame_size;
         }
 
         fn free(self: *Self, target: *FrameNode) void {
