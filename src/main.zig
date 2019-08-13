@@ -122,6 +122,12 @@ pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
 const Config = struct {
     page_size: usize = std.mem.page_size,
+    free_strategy: FreeStrategy = .compact,
+
+    const FreeStrategy = enum {
+        fast,
+        compact,
+    };
 };
 
 pub fn ZeeAlloc(comptime config: Config) type {
@@ -213,20 +219,22 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn free(self: *Self, target: *FrameNode) void {
             var node = target;
-            while (node.frame_size < config.page_size) {
-                const node_addr = @ptrToInt(node);
-                const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
-                const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
-                if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
-                    break;
-                }
+            if (config.free_strategy == .compact) {
+                while (node.frame_size < config.page_size) {
+                    const node_addr = @ptrToInt(node);
+                    const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
+                    const buddy = FrameNode.restoreAddr(buddy_addr) catch unreachable;
+                    if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
+                        break;
+                    }
 
-                self.freeListOfSize(buddy.frame_size).remove(buddy);
+                    self.freeListOfSize(buddy.frame_size).remove(buddy);
 
-                if (buddy_addr < node_addr) {
-                    node = buddy;
+                    if (buddy_addr < node_addr) {
+                        node = buddy;
+                    }
+                    node.frame_size *= 2;
                 }
-                node.frame_size *= 2;
             }
 
             self.freeListOfSize(node.frame_size).prepend(node);
