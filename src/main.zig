@@ -34,13 +34,16 @@ const Config = struct {
         Unsafe,
 
         fn internal(self: Validation) bool {
-            return builtin.mode == .Debug;
+            if (builtin.mode == .Debug) {
+                return true;
+            }
+            return self == .Debug;
         }
 
         fn external(self: Validation) bool {
             return switch (builtin.mode) {
                 .Debug => true,
-                .ReleaseSafe => self == .External,
+                .ReleaseSafe => self == .Debug or self == .External,
                 else => false,
             };
         }
@@ -73,6 +76,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 const node = @ptrCast(*Frame, raw_bytes.ptr);
                 node.frame_size = raw_bytes.len;
                 node.next = undefined;
+                @setRuntimeSafety(comptime config.validation.internal());
                 node.validate() catch unreachable;
                 return node;
             }
@@ -111,6 +115,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn payloadSlice(self: *Frame, start: usize, end: usize) []u8 {
+                @setRuntimeSafety(comptime config.validation.internal());
                 std.debug.assert(start <= end);
                 std.debug.assert(end <= self.payloadSize());
                 const ptr = @ptrCast([*]u8, &self.payload);
@@ -239,6 +244,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 while (node.frame_size < config.page_size) {
                     const node_addr = @ptrToInt(node);
                     const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
+                    @setRuntimeSafety(comptime config.validation.internal());
                     const buddy = Frame.restoreAddr(buddy_addr) catch unreachable;
                     if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
                         break;
@@ -291,6 +297,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             const current_node = if (old_mem.len == 0) null else blk: {
+                @setRuntimeSafety(comptime config.validation.external());
                 const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
                     return @noInlineCall(self.asMinimumData, node, new_size);
@@ -311,6 +318,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
+            @setRuntimeSafety(comptime config.validation.external());
             const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
                 @setRuntimeSafety(comptime config.validation.external());
@@ -374,6 +382,7 @@ var wasm_page_allocator = init: {
         }
 
         pub fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
+            @setRuntimeSafety(builtin.mode == .Debug);
             unreachable; // Shouldn't be shrinking / freeing
         }
     };
