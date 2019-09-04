@@ -228,13 +228,15 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
             const target_frame_size = self.padToFrameSize(target_size);
 
-            var sub_frame_size = std.math.min(node.frame_size / 2, config.page_size);
-            while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
-                const start = node.payloadSize() - sub_frame_size;
-                const sub_frame_data = node.payloadSlice(start, node.payloadSize());
-                const sub_node = Frame.init(sub_frame_data);
-                self.freeListOfSize(sub_frame_size).prepend(sub_node);
-                node.frame_size = sub_frame_size;
+            if (target_frame_size < config.page_size) {
+                var sub_frame_size = std.math.min(node.frame_size / 2, config.page_size);
+                while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
+                    const start = node.payloadSize() - sub_frame_size;
+                    const sub_frame_data = node.payloadSlice(start, node.payloadSize());
+                    const sub_node = Frame.init(sub_frame_data);
+                    self.freeListOfSize(sub_frame_size).prepend(sub_node);
+                    node.frame_size = sub_frame_size;
+                }
             }
 
             return node.payloadSlice(0, target_size);
