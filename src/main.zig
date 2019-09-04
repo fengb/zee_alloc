@@ -73,21 +73,23 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn init(raw_bytes: []u8) *Frame {
+                @setRuntimeSafety(comptime config.validation.internal());
                 const node = @ptrCast(*Frame, raw_bytes.ptr);
                 node.frame_size = raw_bytes.len;
                 node.next = undefined;
-                @setRuntimeSafety(comptime config.validation.internal());
                 node.validate() catch unreachable;
                 return node;
             }
 
             pub fn restoreAddr(addr: usize) !*Frame {
+                @setRuntimeSafety(comptime config.validation.internal());
                 const node = @intToPtr(*Frame, addr);
                 try node.validate();
                 return node;
             }
 
             pub fn restorePayload(payload: [*]u8) !*Frame {
+                @setRuntimeSafety(comptime config.validation.internal());
                 const node = @fieldParentPtr(Frame, "payload", @ptrCast(*[min_payload_size]u8, payload));
                 try node.validate();
                 return node;
