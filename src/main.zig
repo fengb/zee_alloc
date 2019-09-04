@@ -29,32 +29,32 @@ const Config = struct {
     };
 
     const Validation = enum {
-        Debug, // Enable all validations, including library internals
+        Dev, // Enable all validations, including library internals
         External, // Only validate external boundaries (e.g. realloc or free)
         Unsafe, // Turn off all validations
 
-        fn internal(comptime self: Validation) bool {
+        fn useInternal(comptime self: Validation) bool {
             if (builtin.mode == .Debug) {
                 return true;
             }
-            return self == .Debug;
+            return self == .Dev;
         }
 
-        fn external(comptime self: Validation) bool {
+        fn useExternal(comptime self: Validation) bool {
             return switch (builtin.mode) {
                 .Debug => true,
-                .ReleaseSafe => self == .Debug or self == .External,
+                .ReleaseSafe => self == .Dev or self == .External,
                 else => false,
             };
         }
 
         fn assertInternal(comptime self: Validation, ok: bool) void {
-            @setRuntimeSafety(comptime self.internal());
+            @setRuntimeSafety(comptime self.useInternal());
             if (!ok) unreachable;
         }
 
         fn assertExternal(comptime self: Validation, ok: bool) void {
-            @setRuntimeSafety(comptime self.external());
+            @setRuntimeSafety(comptime self.useExternal());
             if (!ok) unreachable;
         }
     };
@@ -83,7 +83,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn init(raw_bytes: []u8) *Frame {
-                @setRuntimeSafety(comptime config.validation.internal());
+                @setRuntimeSafety(comptime config.validation.useInternal());
                 const node = @ptrCast(*Frame, raw_bytes.ptr);
                 node.frame_size = raw_bytes.len;
                 node.next = undefined;
@@ -92,14 +92,14 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn restoreAddr(addr: usize) !*Frame {
-                @setRuntimeSafety(comptime config.validation.internal());
+                @setRuntimeSafety(comptime config.validation.useInternal());
                 const node = @intToPtr(*Frame, addr);
                 try node.validate();
                 return node;
             }
 
             pub fn restorePayload(payload: [*]u8) !*Frame {
-                @setRuntimeSafety(comptime config.validation.internal());
+                @setRuntimeSafety(comptime config.validation.useInternal());
                 const node = @fieldParentPtr(Frame, "payload", @ptrCast(*[min_payload_size]u8, payload));
                 try node.validate();
                 return node;
@@ -127,7 +127,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn payloadSlice(self: *Frame, start: usize, end: usize) []u8 {
-                @setRuntimeSafety(comptime config.validation.internal());
+                @setRuntimeSafety(comptime config.validation.useInternal());
                 config.validation.assertInternal(start <= end);
                 config.validation.assertInternal(end <= self.payloadSize());
                 const ptr = @ptrCast([*]u8, &self.payload);
@@ -214,7 +214,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 }) {
                     if (node.frame_size == search_size) {
                         const removed = free_list.removeAfter(prev);
-                        @setRuntimeSafety(comptime config.validation.internal());
+                        @setRuntimeSafety(comptime config.validation.useInternal());
                         config.validation.assertInternal(removed == node);
                         return node;
                     }
@@ -227,7 +227,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn asMinimumData(self: *Self, node: *Frame, target_size: usize) []u8 {
-            @setRuntimeSafety(comptime config.validation.internal());
+            @setRuntimeSafety(comptime config.validation.useInternal());
             config.validation.assertInternal(target_size <= node.payloadSize());
 
             const target_frame_size = self.padToFrameSize(target_size);
@@ -256,7 +256,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 while (node.frame_size < config.page_size) {
                     const node_addr = @ptrToInt(node);
                     const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
-                    @setRuntimeSafety(comptime config.validation.internal());
+                    @setRuntimeSafety(comptime config.validation.useInternal());
                     const buddy = Frame.restoreAddr(buddy_addr) catch unreachable;
                     if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
                         break;
@@ -291,7 +291,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
-            @setRuntimeSafety(comptime config.validation.internal());
+            @setRuntimeSafety(comptime config.validation.useInternal());
             config.validation.assertInternal(Frame.isCorrectSize(frame_size));
             if (frame_size > config.page_size) {
                 return oversized_index;
@@ -309,7 +309,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             const current_node = if (old_mem.len == 0) null else blk: {
-                @setRuntimeSafety(comptime config.validation.external());
+                @setRuntimeSafety(comptime config.validation.useExternal());
                 const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
                     return @noInlineCall(self.asMinimumData, node, new_size);
@@ -330,10 +330,10 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
-            @setRuntimeSafety(comptime config.validation.external());
+            @setRuntimeSafety(comptime config.validation.useExternal());
             const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
-                @setRuntimeSafety(comptime config.validation.external());
+                @setRuntimeSafety(comptime config.validation.useExternal());
                 config.validation.assertExternal(node.isAllocated());
                 self.free(node);
                 return [_]u8{};
