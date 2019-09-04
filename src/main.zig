@@ -29,23 +29,33 @@ const Config = struct {
     };
 
     const Validation = enum {
-        Debug,
-        External,
-        Unsafe,
+        Debug, // Enable all validations, including library internals
+        External, // Only validate external boundaries (e.g. realloc or free)
+        Unsafe, // Turn off all validations
 
-        fn internal(self: Validation) bool {
+        fn internal(comptime self: Validation) bool {
             if (builtin.mode == .Debug) {
                 return true;
             }
             return self == .Debug;
         }
 
-        fn external(self: Validation) bool {
+        fn external(comptime self: Validation) bool {
             return switch (builtin.mode) {
                 .Debug => true,
                 .ReleaseSafe => self == .Debug or self == .External,
                 else => false,
             };
+        }
+
+        fn assertInternal(comptime self: Validation, ok: bool) void {
+            @setRuntimeSafety(comptime self.internal());
+            if (!ok) unreachable;
+        }
+
+        fn assertExternal(comptime self: Validation, ok: bool) void {
+            @setRuntimeSafety(comptime self.external());
+            if (!ok) unreachable;
         }
     };
 };
@@ -118,8 +128,8 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
             pub fn payloadSlice(self: *Frame, start: usize, end: usize) []u8 {
                 @setRuntimeSafety(comptime config.validation.internal());
-                std.debug.assert(start <= end);
-                std.debug.assert(end <= self.payloadSize());
+                config.validation.assertInternal(start <= end);
+                config.validation.assertInternal(end <= self.payloadSize());
                 const ptr = @ptrCast([*]u8, &self.payload);
                 return ptr[start..end];
             }
@@ -205,7 +215,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                     if (node.frame_size == search_size) {
                         const removed = free_list.removeAfter(prev);
                         @setRuntimeSafety(comptime config.validation.internal());
-                        std.debug.assert(removed == node);
+                        config.validation.assertInternal(removed == node);
                         return node;
                     }
                 }
@@ -218,7 +228,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn asMinimumData(self: *Self, node: *Frame, target_size: usize) []u8 {
             @setRuntimeSafety(comptime config.validation.internal());
-            std.debug.assert(target_size <= node.payloadSize());
+            config.validation.assertInternal(target_size <= node.payloadSize());
 
             const target_frame_size = self.padToFrameSize(target_size);
 
@@ -282,7 +292,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
             @setRuntimeSafety(comptime config.validation.internal());
-            std.debug.assert(Frame.isCorrectSize(frame_size));
+            config.validation.assertInternal(Frame.isCorrectSize(frame_size));
             if (frame_size > config.page_size) {
                 return oversized_index;
             } else if (frame_size <= min_frame_size) {
@@ -324,7 +334,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
                 @setRuntimeSafety(comptime config.validation.external());
-                std.debug.assert(node.isAllocated());
+                config.validation.assertExternal(node.isAllocated());
                 self.free(node);
                 return [_]u8{};
             } else {
@@ -357,6 +367,11 @@ pub fn ZeeAlloc(comptime config: Config) type {
     };
 }
 
+fn assertIf(comptime run_assert: bool, ok: bool) void {
+    @setRuntimeSafety(run_assert);
+    if (!ok) unreachable;
+}
+
 // https://github.com/ziglang/zig/issues/2291
 extern fn @"llvm.wasm.memory.grow.i32"(u32, u32) i32;
 var wasm_page_allocator = init: {
@@ -368,10 +383,11 @@ var wasm_page_allocator = init: {
     // We only need page sizing, and this lets us stay super small
     const WasmPageAllocator = struct {
         pub fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
-            @setRuntimeSafety(builtin.mode == .Debug);
-            std.debug.assert(old_mem.len == 0); // Shouldn't be actually reallocating
-            std.debug.assert(new_size % std.mem.page_size == 0); // Should only be allocating page size chunks
-            std.debug.assert(new_align % std.mem.page_size == 0); // Should only align to page_size increments
+            const is_debug = builtin.mode == .Debug;
+            @setRuntimeSafety(is_debug);
+            assertIf(is_debug, old_mem.len == 0); // Shouldn't be actually reallocating
+            assertIf(is_debug, new_size % std.mem.page_size == 0); // Should only be allocating page size chunks
+            assertIf(is_debug, new_align % std.mem.page_size == 0); // Should only align to page_size increments
 
             const requested_page_count = @intCast(u32, new_size / std.mem.page_size);
             const prev_page_count = @"llvm.wasm.memory.grow.i32"(0, requested_page_count);
