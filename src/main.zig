@@ -211,7 +211,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
                 var iter = free_list.root();
                 while (iter.next) |next| : (iter = next) {
-                    if (next.frame_size == search_size) {
+                    if (next.frame_size >= search_size) {
                         return free_list.removeAfter(iter);
                     }
                 }
