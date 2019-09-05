@@ -91,7 +91,7 @@ Any semblence of competence is merely a coincidence._
 
 ```
 idx frame_size
- 0  >65536  oversized
+ 0  >65536  jumbo
  1   65536  wasm page size
  2   32768
  3   16384
@@ -123,7 +123,7 @@ bigger than necessary, we grab the smallest power of 2 we need and resize the re
 to toss back as free nodes. This is O(log k) which is O(1).
 
 For allocations >64K, we iterate through list 0 to find a matching size, O(n).
-Free oversized frames are never divided into smaller allocations.
+Free jumbo frames are never divided into smaller allocations.
 
 ZeeAlloc only supports pointer alignment up to 2x usize — 8 bytes in wasm. There
 are a few ideas to expand this to up-to half page_size but nothing concrete yet.

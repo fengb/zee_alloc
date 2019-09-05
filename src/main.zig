@@ -13,7 +13,7 @@ fn ceilPowerOfTwo(comptime T: type, value: T) T {
     return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
 }
 
-const oversized_index = 0;
+const jumbo_index = 0;
 const page_index = 1;
 
 pub const ZeeAllocDefaults = ZeeAlloc(Config{});
@@ -65,7 +65,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
     std.debug.assert(std.math.isPowerOfTwo(config.page_size));
 
     const inv_bitsize_ref = page_index + std.math.log2_int(usize, config.page_size);
-    const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 oversized list
+    const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 jumbo list
 
     return struct {
         const Self = @This();
@@ -294,7 +294,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             @setRuntimeSafety(comptime config.validation.useInternal());
             config.validation.assertInternal(Frame.isCorrectSize(frame_size));
             if (frame_size > config.page_size) {
-                return oversized_index;
+                return jumbo_index;
             } else if (frame_size <= min_frame_size) {
                 return self.free_lists.len - 1;
             } else {
@@ -455,7 +455,7 @@ test "ZeeAlloc internals" {
         testing.expectEqual(prev_free_nodes, zee_alloc.debugCountAll());
         zee_alloc.allocator.free(big1);
         testing.expectEqual(prev_free_nodes + 1, zee_alloc.debugCountAll());
-        testing.expectEqual(usize(1), zee_alloc.debugCount(oversized_index));
+        testing.expectEqual(usize(1), zee_alloc.debugCount(jumbo_index));
     }
 
     @"coalesce": {
