@@ -145,8 +145,11 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 return FreeList{ .first = null };
             }
 
-            // Really unsafe, thar be dragons
             pub fn root(self: *FreeList) *Frame {
+                // FreeList.first == Frame.next
+                // This allows for more graceful iteration without needing a back reference.
+                // Since this is not a full frame, accessing any other field will corrupt memory.
+                // Thar be dragons 🐉
                 return @ptrCast(*Frame, self);
             }
 
@@ -318,7 +321,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
             if (current_node) |node| {
                 std.mem.copy(u8, result, old_mem);
-                self.free(node);
+                @noInlineCall(self.free, node);
             }
             return result;
         }
@@ -330,7 +333,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             if (new_size == 0) {
                 @setRuntimeSafety(comptime config.validation.useExternal());
                 config.validation.assertExternal(node.isAllocated());
-                self.free(node);
+                @noInlineCall(self.free, node);
                 return [_]u8{};
             } else {
                 return @noInlineCall(self.asMinimumData, node, new_size);
