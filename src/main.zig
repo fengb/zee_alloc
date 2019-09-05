@@ -68,6 +68,8 @@ pub fn ZeeAlloc(comptime config: Config) type {
     const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 oversized list
 
     return struct {
+        const Self = @This();
+
         // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
         const Frame = packed struct {
             const alignment = 2 * @sizeOf(usize);
@@ -123,6 +125,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn payloadSize(self: *Frame) usize {
+                @setRuntimeSafety(comptime config.validation.useInternal());
                 return self.frame_size - meta_size;
             }
 
@@ -162,7 +165,8 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn removeAfter(self: *FreeList, ref: ?*Frame) ?*Frame {
-                const first_node = self.first orelse return null;
+                @setRuntimeSafety(comptime config.validation.useInternal());
+                const first_node = self.first.?;
                 if (ref) |ref_node| {
                     const next_node = ref_node.next orelse return null;
                     ref_node.next = next_node.next;
@@ -173,8 +177,6 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 }
             }
         };
-
-        const Self = @This();
 
         pub const wasm_allocator = init: {
             var wasm = init(&wasm_page_allocator);
@@ -195,17 +197,21 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn allocNode(self: *Self, memsize: usize) !*Frame {
+            @setRuntimeSafety(comptime config.validation.useInternal());
             const alloc_size = std.mem.alignForward(memsize + meta_size, config.page_size);
             const rawData = try self.backing_allocator.alignedAlloc(u8, config.page_size, alloc_size);
             return Frame.init(rawData);
         }
 
         fn findFreeNode(self: *Self, memsize: usize) ?*Frame {
+            @setRuntimeSafety(comptime config.validation.useInternal());
             var search_size = self.padToFrameSize(memsize);
 
             while (true) : (search_size *= 2) {
+                @setRuntimeSafety(comptime config.validation.useInternal());
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
+
                 var prev: ?*Frame = null;
                 var iter = free_list.first;
                 while (iter) |node| : ({
@@ -275,6 +281,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn padToFrameSize(self: *Self, memsize: usize) usize {
+            @setRuntimeSafety(comptime config.validation.useInternal());
             const meta_memsize = memsize + meta_size;
             if (meta_memsize <= min_frame_size) {
                 return min_frame_size;
@@ -286,6 +293,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn freeListOfSize(self: *Self, frame_size: usize) *FreeList {
+            @setRuntimeSafety(comptime config.validation.useInternal());
             const i = self.freeListIndex(frame_size);
             return &self.free_lists[i];
         }
