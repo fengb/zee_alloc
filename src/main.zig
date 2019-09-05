@@ -204,7 +204,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
         fn allocNode(self: *Self, memsize: usize) !*Frame {
             @setRuntimeSafety(comptime config.validation.useInternal());
             const alloc_size = std.mem.alignForward(memsize + meta_size, config.page_size);
-            const rawData = try self.backing_allocator.alignedAlloc(u8, u29(config.page_size), alloc_size);
+            const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, [_]u8{}, 0, alloc_size, u29(config.page_size));
             return Frame.init(rawData);
         }
 
