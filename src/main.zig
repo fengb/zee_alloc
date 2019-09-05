@@ -209,11 +209,21 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
 
+                var closest_match_prev: ?*Frame = null;
+
                 var iter = free_list.root();
                 while (iter.next) |next| : (iter = next) {
-                    if (next.frame_size >= search_size) {
+                    if (next.frame_size == search_size) {
                         return free_list.removeAfter(iter);
+                    } else if (next.frame_size > search_size) {
+                        if (closest_match_prev == null or next.frame_size < closest_match_prev.?.next.?.frame_size) {
+                            closest_match_prev = iter;
+                        }
                     }
+                }
+
+                if (closest_match_prev) |prev| {
+                    return free_list.removeAfter(prev);
                 }
 
                 if (i <= page_index) {
