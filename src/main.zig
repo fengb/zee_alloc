@@ -75,8 +75,8 @@ pub fn ZeeAlloc(comptime config: Config) type {
             const alignment = 2 * @sizeOf(usize);
             const allocated_signal = @intToPtr(*Frame, std.math.maxInt(usize));
 
-            frame_size: usize,
             next: ?*Frame,
+            frame_size: usize,
             // We can't embed arbitrarily sized arrays in a struct so stick a placeholder here
             payload: [min_payload_size]u8,
 
@@ -138,11 +138,16 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
         };
 
-        const FreeList = struct {
+        const FreeList = packed struct {
             first: ?*Frame,
 
             pub fn init() FreeList {
                 return FreeList{ .first = null };
+            }
+
+            // Really unsafe, thar be dragons
+            pub fn root(self: *FreeList) *Frame {
+                return @ptrCast(*Frame, self);
             }
 
             pub fn prepend(self: *FreeList, node: *Frame) void {
@@ -151,30 +156,19 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn remove(self: *FreeList, target: *Frame) void {
-                var prev: ?*Frame = null;
-                var iter = self.first;
-                while (iter) |node| : ({
-                    prev = iter;
-                    iter = node.next;
-                }) {
-                    if (node == target) {
-                        _ = self.removeAfter(prev);
+                var iter = self.root();
+                while (iter.next) |next| : (iter = next) {
+                    if (next == target) {
+                        _ = self.removeAfter(iter);
                         return;
                     }
                 }
             }
 
-            pub fn removeAfter(self: *FreeList, ref: ?*Frame) ?*Frame {
-                @setRuntimeSafety(comptime config.validation.useInternal());
-                const first_node = self.first.?;
-                if (ref) |ref_node| {
-                    const next_node = ref_node.next orelse return null;
-                    ref_node.next = next_node.next;
-                    return next_node;
-                } else {
-                    self.first = first_node.next;
-                    return first_node;
-                }
+            pub fn removeAfter(self: *FreeList, ref: *Frame) *Frame {
+                const next_node = ref.next.?;
+                ref.next = next_node.next;
+                return next_node;
             }
         };
 
@@ -212,17 +206,10 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
 
-                var prev: ?*Frame = null;
-                var iter = free_list.first;
-                while (iter) |node| : ({
-                    prev = iter;
-                    iter = node.next;
-                }) {
-                    if (node.frame_size == search_size) {
-                        const removed = free_list.removeAfter(prev);
-                        @setRuntimeSafety(comptime config.validation.useInternal());
-                        config.validation.assertInternal(removed == node);
-                        return node;
+                var iter = free_list.root();
+                while (iter.next) |next| : (iter = next) {
+                    if (next.frame_size == search_size) {
+                        return free_list.removeAfter(iter);
                     }
                 }
 
