@@ -20,8 +20,16 @@ pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
 const Config = struct {
     page_size: usize = std.mem.page_size,
-    free_strategy: FreeStrategy = .Compact,
     validation: Validation = .External,
+
+    jumbo_match_strategy: JumboMatchStrategy = .Closest,
+    free_strategy: FreeStrategy = .Compact,
+
+    const JumboMatchStrategy = enum {
+        Exact, // Only exact matches -- better for consistent allocations
+        Closest, // Choose the frame that wastes the least space
+        First, // Use first frame that fits -- faster but increases fragmentation
+    };
 
     const FreeStrategy = enum {
         Fast,
@@ -213,12 +221,26 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
                 var iter = free_list.root();
                 while (iter.next) |next| : (iter = next) {
-                    if (next.frame_size == search_size) {
-                        return free_list.removeAfter(iter);
-                    } else if (next.frame_size > search_size) {
-                        if (closest_match_prev == null or next.frame_size < closest_match_prev.?.next.?.frame_size) {
-                            closest_match_prev = iter;
-                        }
+                    switch (config.jumbo_match_strategy) {
+                        .Exact => {
+                            if (next.frame_size == search_size) {
+                                return free_list.removeAfter(iter);
+                            }
+                        },
+                        .Closest => {
+                            if (next.frame_size == search_size) {
+                                return free_list.removeAfter(iter);
+                            } else if (next.frame_size > search_size) {
+                                if (closest_match_prev == null or next.frame_size < closest_match_prev.?.next.?.frame_size) {
+                                    closest_match_prev = iter;
+                                }
+                            }
+                        },
+                        .First => {
+                            if (next.frame_size >= search_size) {
+                                return free_list.removeAfter(iter);
+                            }
+                        },
                     }
                 }
 
