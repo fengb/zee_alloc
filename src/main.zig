@@ -24,6 +24,7 @@ const Config = struct {
 
     jumbo_match_strategy: JumboMatchStrategy = .Closest,
     buddy_strategy: BuddyStrategy = .Fast,
+    shrink_strategy: ShrinkStrategy = .Waste,
 
     const JumboMatchStrategy = enum {
         /// Use the frame that wastes the least space
@@ -31,12 +32,12 @@ const Config = struct {
         Closest,
 
         /// Use only exact matches
-        /// -75 bytes vs Closest
+        /// -75 bytes vs .Closest
         /// Similar performance to Closest if allocation sizes are consistent throughout lifetime
         Exact,
 
         /// Use the first frame that fits
-        /// -75 bytes vs Closest
+        /// -75 bytes vs .Closest
         /// Initially faster to allocate but causes major fragmentation issues
         First,
     };
@@ -48,9 +49,20 @@ const Config = struct {
         Fast,
 
         /// Recombine with free buddies to reclaim storage
-        /// +153 bytes vs Fast
+        /// +153 bytes vs .Fast
         /// More efficient use of existing memory at the cost of cycles and bytes
         Coalesce,
+    };
+
+    const ShrinkStrategy = enum {
+        /// Return a smaller view into the same frame
+        /// Faster because it does actually shrink, but never reclaims space until freed
+        Waste,
+
+        /// Split the frame into smallest usable chunk
+        /// +112 bytes vs .Waste
+        /// Generally better at reclaiming
+        Chunkify,
     };
 
     const Validation = enum {
@@ -85,11 +97,11 @@ const Config = struct {
     };
 };
 
-pub fn ZeeAlloc(comptime config: Config) type {
-    std.debug.assert(config.page_size >= std.mem.page_size);
-    std.debug.assert(std.math.isPowerOfTwo(config.page_size));
+pub fn ZeeAlloc(comptime conf: Config) type {
+    std.debug.assert(conf.page_size >= std.mem.page_size);
+    std.debug.assert(std.math.isPowerOfTwo(conf.page_size));
 
-    const inv_bitsize_ref = page_index + std.math.log2_int(usize, config.page_size);
+    const inv_bitsize_ref = page_index + std.math.log2_int(usize, conf.page_size);
     const size_buckets = inv_bitsize_ref - std.math.log2_int(usize, min_frame_size) + 1; // + 1 jumbo list
 
     return struct {
@@ -106,11 +118,11 @@ pub fn ZeeAlloc(comptime config: Config) type {
             payload: [min_payload_size]u8,
 
             fn isCorrectSize(memsize: usize) bool {
-                return memsize % config.page_size == 0 or std.math.isPowerOfTwo(memsize);
+                return memsize % conf.page_size == 0 or std.math.isPowerOfTwo(memsize);
             }
 
             pub fn init(raw_bytes: []u8) *Frame {
-                @setRuntimeSafety(comptime config.validation.useInternal());
+                @setRuntimeSafety(comptime conf.validation.useInternal());
                 const node = @ptrCast(*Frame, raw_bytes.ptr);
                 node.frame_size = raw_bytes.len;
                 node.validate() catch unreachable;
@@ -118,14 +130,14 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn restoreAddr(addr: usize) *Frame {
-                @setRuntimeSafety(comptime config.validation.useInternal());
+                @setRuntimeSafety(comptime conf.validation.useInternal());
                 const node = @intToPtr(*Frame, addr);
                 node.validate() catch unreachable;
                 return node;
             }
 
             pub fn restorePayload(payload: [*]u8) !*Frame {
-                @setRuntimeSafety(comptime config.validation.useInternal());
+                @setRuntimeSafety(comptime conf.validation.useInternal());
                 const node = @fieldParentPtr(Frame, "payload", @ptrCast(*[min_payload_size]u8, payload));
                 try node.validate();
                 return node;
@@ -149,14 +161,14 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             pub fn payloadSize(self: *Frame) usize {
-                @setRuntimeSafety(comptime config.validation.useInternal());
+                @setRuntimeSafety(comptime conf.validation.useInternal());
                 return self.frame_size - meta_size;
             }
 
             pub fn payloadSlice(self: *Frame, start: usize, end: usize) []u8 {
-                @setRuntimeSafety(comptime config.validation.useInternal());
-                config.validation.assertInternal(start <= end);
-                config.validation.assertInternal(end <= self.payloadSize());
+                @setRuntimeSafety(comptime conf.validation.useInternal());
+                conf.validation.assertInternal(start <= end);
+                conf.validation.assertInternal(end <= self.payloadSize());
                 const ptr = @ptrCast([*]u8, &self.payload);
                 return ptr[start..end];
             }
@@ -206,7 +218,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         backing_allocator: *Allocator,
 
-        page_size: usize = config.page_size,
+        page_size: usize = conf.page_size,
         free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
         allocator: Allocator = Allocator{
             .reallocFn = realloc,
@@ -218,18 +230,18 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn allocNode(self: *Self, memsize: usize) !*Frame {
-            @setRuntimeSafety(comptime config.validation.useInternal());
-            const alloc_size = std.mem.alignForward(memsize + meta_size, config.page_size);
-            const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, [_]u8{}, 0, alloc_size, u29(config.page_size));
+            @setRuntimeSafety(comptime conf.validation.useInternal());
+            const alloc_size = std.mem.alignForward(memsize + meta_size, conf.page_size);
+            const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, [_]u8{}, 0, alloc_size, u29(conf.page_size));
             return Frame.init(rawData);
         }
 
         fn findFreeNode(self: *Self, memsize: usize) ?*Frame {
-            @setRuntimeSafety(comptime config.validation.useInternal());
+            @setRuntimeSafety(comptime conf.validation.useInternal());
             var search_size = self.padToFrameSize(memsize);
 
             while (true) : (search_size *= 2) {
-                @setRuntimeSafety(comptime config.validation.useInternal());
+                @setRuntimeSafety(comptime conf.validation.useInternal());
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
 
@@ -238,7 +250,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
                 var iter = free_list.root();
                 while (iter.next) |next| : (iter = next) {
-                    switch (config.jumbo_match_strategy) {
+                    switch (conf.jumbo_match_strategy) {
                         .Exact => {
                             if (next.frame_size == search_size) {
                                 return free_list.removeAfter(iter);
@@ -270,11 +282,11 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
         }
 
-        fn asMinimumData(self: *Self, node: *Frame, target_size: usize) []u8 {
-            @setRuntimeSafety(comptime config.validation.useInternal());
-            config.validation.assertInternal(target_size <= node.payloadSize());
+        fn chunkify(self: *Self, node: *Frame, target_size: usize) []u8 {
+            @setRuntimeSafety(comptime conf.validation.useInternal());
+            conf.validation.assertInternal(target_size <= node.payloadSize());
 
-            if (node.frame_size <= config.page_size) {
+            if (node.frame_size <= conf.page_size) {
                 const target_frame_size = self.padToFrameSize(target_size);
 
                 var sub_frame_size = node.frame_size / 2;
@@ -292,14 +304,14 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn free(self: *Self, target: *Frame) void {
             var node = target;
-            if (config.buddy_strategy == .Coalesce) {
-                while (node.frame_size < config.page_size) : (node.frame_size *= 2) {
+            if (conf.buddy_strategy == .Coalesce) {
+                while (node.frame_size < conf.page_size) : (node.frame_size *= 2) {
                     // 16: [0, 16], [32, 48]
                     // 32: [0, 32], [64, 96]
                     const node_addr = @ptrToInt(node);
                     const buddy_addr = node_addr ^ node.frame_size;
 
-                    @setRuntimeSafety(comptime config.validation.useInternal());
+                    @setRuntimeSafety(comptime conf.validation.useInternal());
                     const buddy = Frame.restoreAddr(buddy_addr);
                     if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
                         break;
@@ -316,27 +328,27 @@ pub fn ZeeAlloc(comptime config: Config) type {
         }
 
         fn padToFrameSize(self: *Self, memsize: usize) usize {
-            @setRuntimeSafety(comptime config.validation.useInternal());
+            @setRuntimeSafety(comptime conf.validation.useInternal());
             const meta_memsize = memsize + meta_size;
             if (meta_memsize <= min_frame_size) {
                 return min_frame_size;
-            } else if (meta_memsize < config.page_size) {
+            } else if (meta_memsize < conf.page_size) {
                 return ceilPowerOfTwo(usize, meta_memsize);
             } else {
-                return std.mem.alignForward(meta_memsize, config.page_size);
+                return std.mem.alignForward(meta_memsize, conf.page_size);
             }
         }
 
         fn freeListOfSize(self: *Self, frame_size: usize) *FreeList {
-            @setRuntimeSafety(comptime config.validation.useInternal());
+            @setRuntimeSafety(comptime conf.validation.useInternal());
             const i = self.freeListIndex(frame_size);
             return &self.free_lists[i];
         }
 
         fn freeListIndex(self: *Self, frame_size: usize) usize {
-            @setRuntimeSafety(comptime config.validation.useInternal());
-            config.validation.assertInternal(Frame.isCorrectSize(frame_size));
-            if (frame_size > config.page_size) {
+            @setRuntimeSafety(comptime conf.validation.useInternal());
+            conf.validation.assertInternal(Frame.isCorrectSize(frame_size));
+            if (frame_size > conf.page_size) {
                 return jumbo_index;
             } else if (frame_size <= min_frame_size) {
                 return self.free_lists.len - 1;
@@ -352,17 +364,23 @@ pub fn ZeeAlloc(comptime config: Config) type {
             }
 
             const current_node = if (old_mem.len == 0) null else blk: {
-                @setRuntimeSafety(comptime config.validation.useExternal());
+                @setRuntimeSafety(comptime conf.validation.useExternal());
                 const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
-                    return @noInlineCall(self.asMinimumData, node, new_size);
+                    return switch (conf.shrink_strategy) {
+                        .Waste => node.payloadSlice(0, new_size),
+                        .Chunkify => @noInlineCall(self.chunkify, node, new_size),
+                    };
                 }
                 break :blk node;
             };
 
             const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
             new_node.markAllocated();
-            const result = @noInlineCall(self.asMinimumData, new_node, new_size);
+            const result = switch (conf.shrink_strategy) {
+                .Waste => self.chunkify(new_node, new_size),
+                .Chunkify => @noInlineCall(self.chunkify, new_node, new_size),
+            };
 
             if (current_node) |node| {
                 std.mem.copy(u8, result, old_mem);
@@ -373,15 +391,18 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
-            @setRuntimeSafety(comptime config.validation.useExternal());
+            @setRuntimeSafety(comptime conf.validation.useExternal());
             const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
-                @setRuntimeSafety(comptime config.validation.useExternal());
-                config.validation.assertExternal(node.isAllocated());
+                @setRuntimeSafety(comptime conf.validation.useExternal());
+                conf.validation.assertExternal(node.isAllocated());
                 @noInlineCall(self.free, node);
                 return [_]u8{};
             } else {
-                return @noInlineCall(self.asMinimumData, node, new_size);
+                return switch (conf.shrink_strategy) {
+                    .Waste => node.payloadSlice(0, new_size),
+                    .Chunkify => @noInlineCall(self.chunkify, node, new_size),
+                };
             }
         }
 
