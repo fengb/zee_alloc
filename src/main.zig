@@ -462,16 +462,11 @@ var wasm_page_allocator = init: {
             const start_ptr = @intToPtr([*]u8, @intCast(usize, prev_page_count) * std.mem.page_size);
             return start_ptr[0..new_size];
         }
-
-        pub fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
-            @setRuntimeSafety(builtin.mode == .Debug);
-            unreachable; // Shouldn't be shrinking / freeing
-        }
     };
 
     break :init Allocator{
         .reallocFn = WasmPageAllocator.realloc,
-        .shrinkFn = WasmPageAllocator.shrink,
+        .shrinkFn = undefined, // Shouldn't be shrinking / freeing
     };
 };
 
