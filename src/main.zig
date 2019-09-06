@@ -439,6 +439,7 @@ var wasm_page_allocator = init: {
 
 pub const CExports = struct {
     malloc: bool = false,
+    calloc: bool = false,
     realloc: bool = false,
     free: bool = false,
 
@@ -447,6 +448,16 @@ pub const CExports = struct {
             _ = struct {
                 export fn malloc(size: usize) ?*c_void {
                     const result = allocator.alloc(u8, size) catch return null;
+                    return result.ptr;
+                }
+            };
+        }
+
+        if (self.calloc) {
+            _ = struct {
+                export fn calloc(num_elements: usize, element_size: usize) ?*c_void {
+                    const result = allocator.alloc(u8, num_elements * element_size) catch return null;
+                    std.mem.set(u8, result, 0);
                     return result.ptr;
                 }
             };
