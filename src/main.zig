@@ -96,15 +96,14 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 @setRuntimeSafety(comptime config.validation.useInternal());
                 const node = @ptrCast(*Frame, raw_bytes.ptr);
                 node.frame_size = raw_bytes.len;
-                node.next = undefined;
                 node.validate() catch unreachable;
                 return node;
             }
 
-            pub fn restoreAddr(addr: usize) !*Frame {
+            pub fn restoreAddr(addr: usize) *Frame {
                 @setRuntimeSafety(comptime config.validation.useInternal());
                 const node = @intToPtr(*Frame, addr);
-                try node.validate();
+                node.validate() catch unreachable;
                 return node;
             }
 
@@ -218,6 +217,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
                 var free_list = &self.free_lists[i];
 
                 var closest_match_prev: ?*Frame = null;
+                var closest_match_size: usize = std.math.maxInt(usize);
 
                 var iter = free_list.root();
                 while (iter.next) |next| : (iter = next) {
@@ -230,10 +230,9 @@ pub fn ZeeAlloc(comptime config: Config) type {
                         .Closest => {
                             if (next.frame_size == search_size) {
                                 return free_list.removeAfter(iter);
-                            } else if (next.frame_size > search_size) {
-                                if (closest_match_prev == null or next.frame_size < closest_match_prev.?.next.?.frame_size) {
-                                    closest_match_prev = iter;
-                                }
+                            } else if (next.frame_size > search_size and next.frame_size < closest_match_size) {
+                                closest_match_prev = iter;
+                                closest_match_size = next.frame_size;
                             }
                         },
                         .First => {
@@ -258,10 +257,10 @@ pub fn ZeeAlloc(comptime config: Config) type {
             @setRuntimeSafety(comptime config.validation.useInternal());
             config.validation.assertInternal(target_size <= node.payloadSize());
 
-            const target_frame_size = self.padToFrameSize(target_size);
+            if (node.frame_size <= config.page_size) {
+                const target_frame_size = self.padToFrameSize(target_size);
 
-            if (target_frame_size < config.page_size) {
-                var sub_frame_size = std.math.min(node.frame_size / 2, config.page_size);
+                var sub_frame_size = node.frame_size / 2;
                 while (sub_frame_size >= target_frame_size) : (sub_frame_size /= 2) {
                     const start = node.payloadSize() - sub_frame_size;
                     const sub_frame_data = node.payloadSlice(start, node.payloadSize());
@@ -274,30 +273,25 @@ pub fn ZeeAlloc(comptime config: Config) type {
             return node.payloadSlice(0, target_size);
         }
 
-        fn findBuddyAddr(self: *Self, addr: usize, frame_size: usize) usize {
-            // 16: [0, 16], [32, 48]
-            // 32: [0, 32], [64, 96]
-            return addr ^ frame_size;
-        }
-
         fn free(self: *Self, target: *Frame) void {
             var node = target;
             if (config.free_strategy == .Compact) {
-                while (node.frame_size < config.page_size) {
+                while (node.frame_size < config.page_size) : (node.frame_size *= 2) {
+                    // 16: [0, 16], [32, 48]
+                    // 32: [0, 32], [64, 96]
                     const node_addr = @ptrToInt(node);
-                    const buddy_addr = self.findBuddyAddr(node_addr, node.frame_size);
+                    const buddy_addr = node_addr ^ node.frame_size;
+
                     @setRuntimeSafety(comptime config.validation.useInternal());
-                    const buddy = Frame.restoreAddr(buddy_addr) catch unreachable;
+                    const buddy = Frame.restoreAddr(buddy_addr);
                     if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
                         break;
                     }
 
                     self.freeListOfSize(buddy.frame_size).remove(buddy);
 
-                    if (buddy_addr < node_addr) {
-                        node = buddy;
-                    }
-                    node.frame_size *= 2;
+                    // Use the lowest address as the new root
+                    node = Frame.restoreAddr(node_addr & buddy_addr);
                 }
             }
 
@@ -309,7 +303,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
             const meta_memsize = memsize + meta_size;
             if (meta_memsize <= min_frame_size) {
                 return min_frame_size;
-            } else if (meta_memsize <= config.page_size) {
+            } else if (meta_memsize < config.page_size) {
                 return ceilPowerOfTwo(usize, meta_memsize);
             } else {
                 return std.mem.alignForward(meta_memsize, config.page_size);
