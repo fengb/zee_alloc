@@ -454,12 +454,13 @@ pub const ExportC = struct {
                 return result.ptr;
             }
             extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
-                if (num_elements * size == 0) {
-                    return null;
+                const size = num_elements *% element_size;
+                const c_ptr = @noInlineCall(malloc, size);
+                if (c_ptr) |ptr| {
+                    const p = @ptrCast([*]u8, ptr);
+                    std.mem.set(u8, p[0..size], 0);
                 }
-                const result = conf.allocator.alloc(u8, num_elements * element_size) catch return null;
-                std.mem.set(u8, result, 0);
-                return result.ptr;
+                return c_ptr;
             }
             extern fn realloc(c_ptr: ?*c_void, new_size: usize) ?*c_void {
                 if (new_size == 0) {
