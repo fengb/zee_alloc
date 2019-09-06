@@ -23,17 +23,34 @@ const Config = struct {
     validation: Validation = .External,
 
     jumbo_match_strategy: JumboMatchStrategy = .Closest,
-    free_strategy: FreeStrategy = .Compact,
+    buddy_strategy: BuddyStrategy = .Fast,
 
     const JumboMatchStrategy = enum {
-        Exact, // Only exact matches -- better for consistent allocations
-        Closest, // Choose the frame that wastes the least space
-        First, // Use first frame that fits -- faster but increases fragmentation
+        /// Use the frame that wastes the least space
+        /// Scans the entire jumbo freelist, which is slower but keeps memory pretty tidy
+        Closest,
+
+        /// Use only exact matches
+        /// -75 bytes vs Closest
+        /// Similar performance to Closest if allocation sizes are consistent throughout lifetime
+        Exact,
+
+        /// Use the first frame that fits
+        /// -75 bytes vs Closest
+        /// Initially faster to allocate but causes major fragmentation issues
+        First,
     };
 
-    const FreeStrategy = enum {
+    const BuddyStrategy = enum {
+        /// Return the raw free frame immediately
+        /// Generally faster because it does not recombine or resplit frames,
+        /// but it also requires more underlying memory
         Fast,
-        Compact,
+
+        /// Recombine with free buddies to reclaim storage
+        /// +153 bytes vs Fast
+        /// More efficient use of existing memory at the cost of cycles and bytes
+        Coalesce,
     };
 
     const Validation = enum {
@@ -275,7 +292,7 @@ pub fn ZeeAlloc(comptime config: Config) type {
 
         fn free(self: *Self, target: *Frame) void {
             var node = target;
-            if (config.free_strategy == .Compact) {
+            if (config.buddy_strategy == .Coalesce) {
                 while (node.frame_size < config.page_size) : (node.frame_size *= 2) {
                     // 16: [0, 16], [32, 48]
                     // 32: [0, 32], [64, 96]
