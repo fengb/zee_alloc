@@ -437,26 +437,27 @@ var wasm_page_allocator = init: {
     };
 };
 
-pub const CExports = struct {
-    malloc: bool = false,
+pub const ExportC = struct {
+    malloc: bool = true,
+    free: bool = true,
     calloc: bool = false,
     realloc: bool = false,
-    free: bool = false,
+    allocator: *std.mem.Allocator,
 
-    pub fn using(comptime self: CExports, comptime allocator: *std.mem.Allocator) void {
+    pub fn run(comptime conf: ExportC) void {
         const Funcs = struct {
             extern fn malloc(size: usize) ?*c_void {
                 if (size == 0) {
                     return null;
                 }
-                const result = allocator.alloc(u8, size) catch return null;
+                const result = conf.allocator.alloc(u8, size) catch return null;
                 return result.ptr;
             }
             extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
                 if (num_elements * size == 0) {
                     return null;
                 }
-                const result = allocator.alloc(u8, num_elements * element_size) catch return null;
+                const result = conf.allocator.alloc(u8, num_elements * element_size) catch return null;
                 std.mem.set(u8, result, 0);
                 return result.ptr;
             }
@@ -467,7 +468,7 @@ pub const CExports = struct {
                 } else if (c_ptr) |ptr| {
                     // Use a synthetic slice
                     const p = @ptrCast([*]u8, ptr);
-                    const result = allocator.realloc(p[0..1], new_size) catch return null;
+                    const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
                     return @ptrCast(*c_void, result.ptr);
                 } else {
                     return @noInlineCall(malloc, new_size);
@@ -477,21 +478,21 @@ pub const CExports = struct {
                 if (c_ptr) |ptr| {
                     // Use a synthetic slice. zee_alloc will free via corresponding metadata.
                     const p = @ptrCast([*]u8, ptr);
-                    allocator.free(p[0..1]);
+                    conf.allocator.free(p[0..1]);
                 }
             }
         };
 
-        if (self.malloc) {
+        if (conf.malloc) {
             @export("malloc", Funcs.malloc, .Strong);
         }
-        if (self.calloc) {
+        if (conf.calloc) {
             @export("calloc", Funcs.calloc, .Strong);
         }
-        if (self.realloc) {
+        if (conf.realloc) {
             @export("realloc", Funcs.realloc, .Strong);
         }
-        if (self.free) {
+        if (conf.free) {
             @export("free", Funcs.free, .Strong);
         }
     }
