@@ -2,5 +2,9 @@ const builtin = @import("builtin");
 const zee_alloc = @import("main.zig");
 
 comptime {
-    zee_alloc.exportC(zee_alloc.ZeeAllocDefaults.wasm_allocator);
+    const c_exports = (zee_alloc.CExports{
+        .malloc = true,
+        .realloc = true,
+        .free = true,
+    }).using(zee_alloc.ZeeAllocDefaults.wasm_allocator);
 }
