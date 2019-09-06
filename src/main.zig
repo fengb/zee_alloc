@@ -444,44 +444,55 @@ pub const CExports = struct {
     free: bool = false,
 
     pub fn using(comptime self: CExports, comptime allocator: *std.mem.Allocator) void {
-        if (self.malloc) {
-            _ = struct {
-                export fn malloc(size: usize) ?*c_void {
-                    const result = allocator.alloc(u8, size) catch return null;
-                    return result.ptr;
+        const Funcs = struct {
+            extern fn malloc(size: usize) ?*c_void {
+                if (size == 0) {
+                    return null;
                 }
-            };
-        }
-
-        if (self.calloc) {
-            _ = struct {
-                export fn calloc(num_elements: usize, element_size: usize) ?*c_void {
-                    const result = allocator.alloc(u8, num_elements * element_size) catch return null;
-                    std.mem.set(u8, result, 0);
-                    return result.ptr;
+                const result = allocator.alloc(u8, size) catch return null;
+                return result.ptr;
+            }
+            extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
+                if (num_elements * size == 0) {
+                    return null;
                 }
-            };
-        }
-
-        if (self.realloc) {
-            _ = struct {
-                export fn realloc(c_ptr: *c_void, new_size: usize) ?*c_void {
+                const result = allocator.alloc(u8, num_elements * element_size) catch return null;
+                std.mem.set(u8, result, 0);
+                return result.ptr;
+            }
+            extern fn realloc(c_ptr: ?*c_void, new_size: usize) ?*c_void {
+                if (new_size == 0) {
+                    @noInlineCall(free, c_ptr);
+                    return null;
+                } else if (c_ptr) |ptr| {
                     // Use a synthetic slice
-                    const ptr = @ptrCast([*]u8, c_ptr);
-                    const result = allocator.realloc(ptr[0..1], new_size) catch return null;
-                    return result.ptr;
+                    const p = @ptrCast([*]u8, ptr);
+                    const result = allocator.realloc(p[0..1], new_size) catch return null;
+                    return @ptrCast(*c_void, result.ptr);
+                } else {
+                    return @noInlineCall(malloc, new_size);
                 }
-            };
-        }
-
-        if (self.free) {
-            _ = struct {
-                export fn free(c_ptr: *c_void) void {
+            }
+            extern fn free(c_ptr: ?*c_void) void {
+                if (c_ptr) |ptr| {
                     // Use a synthetic slice. zee_alloc will free via corresponding metadata.
-                    const ptr = @ptrCast([*]u8, c_ptr);
-                    allocator.free(ptr[0..1]);
+                    const p = @ptrCast([*]u8, ptr);
+                    allocator.free(p[0..1]);
                 }
-            };
+            }
+        };
+
+        if (self.malloc) {
+            @export("malloc", Funcs.malloc, .Strong);
+        }
+        if (self.calloc) {
+            @export("calloc", Funcs.calloc, .Strong);
+        }
+        if (self.realloc) {
+            @export("realloc", Funcs.realloc, .Strong);
+        }
+        if (self.free) {
+            @export("free", Funcs.free, .Strong);
         }
     }
 };
