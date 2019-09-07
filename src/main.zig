@@ -61,8 +61,13 @@ const Config = struct {
 
         /// Split the frame into smallest usable chunk
         /// +112 bytes vs .Waste
-        /// Generally better at reclaiming
+        /// Better at reclaiming non-jumbo memory, but never reclaims jumbo until freed
         Chunkify,
+
+        /// Find and swap a replacement frame
+        /// +295 bytes vs .Waste
+        /// Reclaims all memory, but generally slower
+        Swap,
     };
 
     const Validation = enum {
@@ -367,10 +372,15 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 @setRuntimeSafety(comptime conf.validation.useExternal());
                 const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
-                    return switch (conf.shrink_strategy) {
-                        .Waste => node.payloadSlice(0, new_size),
-                        .Chunkify => @noInlineCall(self.chunkify, node, new_size),
-                    };
+                    switch (conf.shrink_strategy) {
+                        .Waste => return node.payloadSlice(0, new_size),
+                        .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
+                        .Swap => {
+                            if (self.padToFrameSize(new_size) == node.frame_size) {
+                                return node.payloadSlice(0, new_size);
+                            }
+                        },
+                    }
                 }
                 break :blk node;
             };
@@ -380,10 +390,15 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const result = switch (conf.shrink_strategy) {
                 .Waste => self.chunkify(new_node, new_size),
                 .Chunkify => @noInlineCall(self.chunkify, new_node, new_size),
+                .Swap => @noInlineCall(self.chunkify, new_node, new_size),
             };
 
             if (current_node) |node| {
-                std.mem.copy(u8, result, old_mem);
+                if (conf.shrink_strategy == .Swap) {
+                    std.mem.copy(u8, result, old_mem[0..std.math.min(old_mem.len, new_size)]);
+                } else {
+                    std.mem.copy(u8, result, old_mem);
+                }
                 @noInlineCall(self.free, node);
             }
             return result;
@@ -398,11 +413,10 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 conf.validation.assertExternal(node.isAllocated());
                 @noInlineCall(self.free, node);
                 return [_]u8{};
-            } else {
-                return switch (conf.shrink_strategy) {
-                    .Waste => node.payloadSlice(0, new_size),
-                    .Chunkify => @noInlineCall(self.chunkify, node, new_size),
-                };
+            } else switch (conf.shrink_strategy) {
+                .Waste => return node.payloadSlice(0, new_size),
+                .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
+                .Swap => return realloc(allocator, old_mem, old_align, new_size, new_align) catch @noInlineCall(self.chunkify, node, new_size),
             }
         }
 
