@@ -546,28 +546,6 @@ pub const ExportC = struct {
     }
 };
 
-pub fn exportC(comptime allocator: *std.mem.Allocator) void {
-    _ = struct {
-        export fn malloc(size: usize) ?*c_void {
-            const result = allocator.alloc(u8, size) catch return null;
-            return result.ptr;
-        }
-
-        export fn realloc(c_ptr: *c_void, new_size: usize) ?*c_void {
-            // Use a synthetic slice
-            const ptr = @ptrCast([*]u8, c_ptr);
-            const result = allocator.realloc(ptr[0..1], new_size) catch return null;
-            return result.ptr;
-        }
-
-        export fn free(c_ptr: *c_void) void {
-            // Use a synthetic slice. zee_alloc will free via corresponding metadata.
-            const ptr = @ptrCast([*]u8, c_ptr);
-            allocator.free(ptr[0..1]);
-        }
-    };
-}
-
 // Tests
 
 const testing = std.testing;
