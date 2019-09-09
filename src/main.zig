@@ -24,7 +24,7 @@ const Config = struct {
 
     jumbo_match_strategy: JumboMatchStrategy = .Closest,
     buddy_strategy: BuddyStrategy = .Fast,
-    shrink_strategy: ShrinkStrategy = .Waste,
+    shrink_strategy: ShrinkStrategy = .Defer,
 
     const JumboMatchStrategy = enum {
         /// Use the frame that wastes the least space
@@ -57,15 +57,15 @@ const Config = struct {
     const ShrinkStrategy = enum {
         /// Return a smaller view into the same frame
         /// Faster because it does actually shrink, but never reclaims space until freed
-        Waste,
+        Defer,
 
         /// Split the frame into smallest usable chunk
-        /// +112 bytes vs .Waste
+        /// +112 bytes vs .Defer
         /// Better at reclaiming non-jumbo memory, but never reclaims jumbo until freed
         Chunkify,
 
         /// Find and swap a replacement frame
-        /// +295 bytes vs .Waste
+        /// +295 bytes vs .Defer
         /// Reclaims all memory, but generally slower
         Swap,
     };
@@ -373,7 +373,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
                 if (new_size <= node.payloadSize()) {
                     switch (conf.shrink_strategy) {
-                        .Waste => return node.payloadSlice(0, new_size),
+                        .Defer => return node.payloadSlice(0, new_size),
                         .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
                         .Swap => {
                             if (self.padToFrameSize(new_size) == node.frame_size) {
@@ -388,7 +388,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
             new_node.markAllocated();
             const result = switch (conf.shrink_strategy) {
-                .Waste => self.chunkify(new_node, new_size),
+                .Defer => self.chunkify(new_node, new_size),
                 .Chunkify => @noInlineCall(self.chunkify, new_node, new_size),
                 .Swap => @noInlineCall(self.chunkify, new_node, new_size),
             };
@@ -414,7 +414,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 @noInlineCall(self.free, node);
                 return [_]u8{};
             } else switch (conf.shrink_strategy) {
-                .Waste => return node.payloadSlice(0, new_size),
+                .Defer => return node.payloadSlice(0, new_size),
                 .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
                 .Swap => return realloc(allocator, old_mem, old_align, new_size, new_align) catch @noInlineCall(self.chunkify, node, new_size),
             }
@@ -758,7 +758,6 @@ test "ZeeAlloc with FixedBufferAllocator" {
 }
 
 test "ZeeAlloc with DirectAllocator" {
-    var buf: [1000000]u8 = undefined;
     var zee_alloc = ZeeAllocDefaults.init(std.heap.direct_allocator);
 
     try testAllocator(&zee_alloc.allocator);
