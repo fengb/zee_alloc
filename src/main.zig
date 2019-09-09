@@ -6,13 +6,6 @@ const meta_size = 2 * @sizeOf(usize);
 pub const min_payload_size = meta_size;
 pub const min_frame_size = meta_size + min_payload_size;
 
-// https://github.com/ziglang/zig/issues/2426
-fn ceilPowerOfTwo(comptime T: type, value: T) T {
-    if (value <= 2) return value;
-    const Shift = comptime std.math.Log2Int(T);
-    return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
-}
-
 const jumbo_index = 0;
 const page_index = 1;
 
@@ -332,11 +325,25 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             self.freeListOfSize(node.frame_size).prepend(node);
         }
 
+        // https://github.com/ziglang/zig/issues/2426
+        fn unsafeCeilPowerOfTwo(comptime T: type, value: T) T {
+            @setRuntimeSafety(comptime conf.validation.useInternal());
+            if (value <= 2) return value;
+            const Shift = comptime std.math.Log2Int(T);
+            return T(1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
+        }
+
+        fn unsafeLog2Int(comptime T: type, x: T) std.math.Log2Int(T) {
+            @setRuntimeSafety(comptime conf.validation.useInternal());
+            conf.validation.assertInternal(x != 0);
+            return @intCast(std.math.Log2Int(T), T.bit_count - 1 - @clz(T, x));
+        }
+
         fn padToFrameSize(self: *Self, memsize: usize) usize {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             const meta_memsize = std.math.max(memsize + meta_size, min_frame_size);
             if (meta_memsize < conf.page_size) {
-                return ceilPowerOfTwo(usize, meta_memsize);
+                return unsafeCeilPowerOfTwo(usize, meta_memsize);
             } else {
                 return std.mem.alignForward(meta_memsize, conf.page_size);
             }
@@ -351,14 +358,14 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         fn freeListIndex(self: *Self, frame_size: usize) usize {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             conf.validation.assertInternal(Frame.isCorrectSize(frame_size));
-            return inv_bitsize_ref - std.math.min(inv_bitsize_ref, std.math.log2_int(usize, frame_size));
+            return inv_bitsize_ref - std.math.min(inv_bitsize_ref, unsafeLog2Int(usize, frame_size));
             // More byte-efficient of this:
             // if (frame_size > conf.page_size) {
             //     return jumbo_index;
             // } else if (frame_size <= min_frame_size) {
             //     return self.free_lists.len - 1;
             // } else {
-            //     return inv_bitsize_ref - std.math.log2_int(usize, frame_size);
+            //     return inv_bitsize_ref - unsafeLog2Int(usize, frame_size);
             // }
         }
 
