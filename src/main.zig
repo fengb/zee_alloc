@@ -123,7 +123,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             payload: [min_payload_size]u8,
 
             fn isCorrectSize(memsize: usize) bool {
-                return memsize % conf.page_size == 0 or std.math.isPowerOfTwo(memsize);
+                return memsize % conf.page_size == 0 or std.math.isPowerOfTwo(memsize) and memsize >= min_frame_size;
             }
 
             pub fn init(raw_bytes: []u8) *Frame {
@@ -334,10 +334,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
         fn padToFrameSize(self: *Self, memsize: usize) usize {
             @setRuntimeSafety(comptime conf.validation.useInternal());
-            const meta_memsize = memsize + meta_size;
-            if (meta_memsize <= min_frame_size) {
-                return min_frame_size;
-            } else if (meta_memsize < conf.page_size) {
+            const meta_memsize = std.math.max(memsize + meta_size, min_frame_size);
+            if (meta_memsize < conf.page_size) {
                 return ceilPowerOfTwo(usize, meta_memsize);
             } else {
                 return std.mem.alignForward(meta_memsize, conf.page_size);
@@ -353,13 +351,15 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         fn freeListIndex(self: *Self, frame_size: usize) usize {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             conf.validation.assertInternal(Frame.isCorrectSize(frame_size));
-            if (frame_size > conf.page_size) {
-                return jumbo_index;
-            } else if (frame_size <= min_frame_size) {
-                return self.free_lists.len - 1;
-            } else {
-                return inv_bitsize_ref - std.math.log2_int(usize, frame_size);
-            }
+            return inv_bitsize_ref - std.math.min(inv_bitsize_ref, std.math.log2_int(usize, frame_size));
+            // More byte-efficient of this:
+            // if (frame_size > conf.page_size) {
+            //     return jumbo_index;
+            // } else if (frame_size <= min_frame_size) {
+            //     return self.free_lists.len - 1;
+            // } else {
+            //     return inv_bitsize_ref - std.math.log2_int(usize, frame_size);
+            // }
         }
 
         fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
