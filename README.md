@@ -4,15 +4,45 @@ A tiny general purpose allocator targeting WebAssembly.
 
 This allocator has not been well tested. Use at your own peril.
 
+### Getting Started
+
+In zig:
+
+```zig
+const zee_alloc = @import("zee_alloc");
+
+pub fn foo() void {
+    var mem = zee_alloc.ZeeAllocDefaults.wasm_allocator.alloc(u8, 1000);
+    defer zee_alloc.ZeeAllocDefaults.wasm_allocator.free(mem);
+}
+```
+
+Exporting into wasm:
+
+```zig
+const zee_alloc = @import("zee_alloc");
+
+comptime {
+    (zee_alloc.ExportC{
+        .allocator = zee_alloc.ZeeAllocDefaults.wasm_allocator,
+        .malloc = true,
+        .free = true,
+        .realloc = false,
+        .calloc = false,
+    }).run();
+  }
+```
+
 ### Goals
 
 _(inspired by Rust's [wee_alloc](https://github.com/rustwasm/wee_alloc))_
 
 1. Tiny compiled output
 2. Tiny compiled output x2
-3. Avoid long-term fragmentation
-4. Reasonably fast alloc and free
-5. Code simplicity — probably goes in hand with tiny output
+3. Malloc/free compatibility
+4. Avoid long-term fragmentation
+5. Reasonably fast alloc and free
+6. Code simplicity — probably goes in hand with tiny output
 
 **Non-goals**
 
@@ -28,60 +58,60 @@ _(inspired by Rust's [wee_alloc](https://github.com/rustwasm/wee_alloc))_
 ```
 Benchmark                                   Mean(ns)
 ----------------------------------------------------
-DirectAllocator.0                              48554
-DirectAllocator.1                              95779
-DirectAllocator.2                             190130
-DirectAllocator.3                              47516
-DirectAllocator.4                              95769
-DirectAllocator.5                             194154
-DirectAllocator.6                              48379
-DirectAllocator.7                              96468
-DirectAllocator.8                             197277
-Arena_DirectAllocator.0                        12720
-Arena_DirectAllocator.1                        21424
-Arena_DirectAllocator.2                        32831
-Arena_DirectAllocator.3                        29824
-Arena_DirectAllocator.4                        48563
-Arena_DirectAllocator.5                        71561
-Arena_DirectAllocator.6                        41373
-Arena_DirectAllocator.7                        64670
-Arena_DirectAllocator.8                       100955
-ZeeAlloc_DirectAllocator.0                     18631
-ZeeAlloc_DirectAllocator.1                     37117
-ZeeAlloc_DirectAllocator.2                     79334
-ZeeAlloc_DirectAllocator.3                     36779
-ZeeAlloc_DirectAllocator.4                     72324
-ZeeAlloc_DirectAllocator.5                    148178
-ZeeAlloc_DirectAllocator.6                     55344
-ZeeAlloc_DirectAllocator.7                    113971
-ZeeAlloc_DirectAllocator.8                    226724
-FixedBufferAllocator.0                           725
-FixedBufferAllocator.1                          1470
-FixedBufferAllocator.2                          3186
-FixedBufferAllocator.3                           904
-FixedBufferAllocator.4                          1972
-FixedBufferAllocator.5                          3770
-FixedBufferAllocator.6                          1280
-FixedBufferAllocator.7                          2532
-FixedBufferAllocator.8                          4989
-Arena_FixedBufferAllocator.0                    1185
-Arena_FixedBufferAllocator.1                    2165
-Arena_FixedBufferAllocator.2                    4423
-Arena_FixedBufferAllocator.3                    2076
-Arena_FixedBufferAllocator.4                    3701
-Arena_FixedBufferAllocator.5                    7778
-Arena_FixedBufferAllocator.6                    2693
-Arena_FixedBufferAllocator.7                    4982
-Arena_FixedBufferAllocator.8                    8757
-ZeeAlloc_FixedBufferAllocator.0                 2190
-ZeeAlloc_FixedBufferAllocator.1                 5087
-ZeeAlloc_FixedBufferAllocator.2                 9136
-ZeeAlloc_FixedBufferAllocator.3                 2619
-ZeeAlloc_FixedBufferAllocator.4                 5169
-ZeeAlloc_FixedBufferAllocator.5                10025
-ZeeAlloc_FixedBufferAllocator.6                 3124
-ZeeAlloc_FixedBufferAllocator.7                 6378
-ZeeAlloc_FixedBufferAllocator.8                14989
+DirectAllocator.0                              50842
+DirectAllocator.1                              98343
+DirectAllocator.2                             203980
+DirectAllocator.3                              49908
+DirectAllocator.4                             103635
+DirectAllocator.5                             195941
+DirectAllocator.6                              47367
+DirectAllocator.7                             101733
+DirectAllocator.8                             202697
+Arena_DirectAllocator.0                        11837
+Arena_DirectAllocator.1                        19591
+Arena_DirectAllocator.2                        30689
+Arena_DirectAllocator.3                        30916
+Arena_DirectAllocator.4                        52425
+Arena_DirectAllocator.5                        75673
+Arena_DirectAllocator.6                        44874
+Arena_DirectAllocator.7                        67557
+Arena_DirectAllocator.8                        96276
+ZeeAlloc_DirectAllocator.0                     15892
+ZeeAlloc_DirectAllocator.1                     24435
+ZeeAlloc_DirectAllocator.2                     49564
+ZeeAlloc_DirectAllocator.3                     26656
+ZeeAlloc_DirectAllocator.4                     52462
+ZeeAlloc_DirectAllocator.5                     93854
+ZeeAlloc_DirectAllocator.6                     51493
+ZeeAlloc_DirectAllocator.7                     95223
+ZeeAlloc_DirectAllocator.8                    250187
+FixedBufferAllocator.0                           177
+FixedBufferAllocator.1                           412
+FixedBufferAllocator.2                          1006
+FixedBufferAllocator.3                           296
+FixedBufferAllocator.4                           785
+FixedBufferAllocator.5                          1721
+FixedBufferAllocator.6                           848
+FixedBufferAllocator.7                          1546
+FixedBufferAllocator.8                          3331
+Arena_FixedBufferAllocator.0                     299
+Arena_FixedBufferAllocator.1                     573
+Arena_FixedBufferAllocator.2                    1624
+Arena_FixedBufferAllocator.3                    1115
+Arena_FixedBufferAllocator.4                    1868
+Arena_FixedBufferAllocator.5                    4422
+Arena_FixedBufferAllocator.6                    1706
+Arena_FixedBufferAllocator.7                    3389
+Arena_FixedBufferAllocator.8                    8430
+ZeeAlloc_FixedBufferAllocator.0                  232
+ZeeAlloc_FixedBufferAllocator.1                  577
+ZeeAlloc_FixedBufferAllocator.2                 1165
+ZeeAlloc_FixedBufferAllocator.3                  443
+ZeeAlloc_FixedBufferAllocator.4                  907
+ZeeAlloc_FixedBufferAllocator.5                 1848
+ZeeAlloc_FixedBufferAllocator.6                  907
+ZeeAlloc_FixedBufferAllocator.7                 1721
+ZeeAlloc_FixedBufferAllocator.8                 3836
 ```
 
 ### Architecture — [Buddy memory allocation](https://en.wikipedia.org/wiki/Buddy_memory_allocation)
@@ -125,5 +155,5 @@ to toss back as free nodes. This is O(log k) which is O(1).
 For allocations >64K, we iterate through list 0 to find a matching size, O(n).
 Free jumbo frames are never divided into smaller allocations.
 
-ZeeAlloc only supports pointer alignment up to 2x usize — 8 bytes in wasm. There
+ZeeAlloc only supports pointer alignment at 2x usize — 8 bytes in wasm. There
 are a few ideas to expand this to up-to half page_size but nothing concrete yet.
