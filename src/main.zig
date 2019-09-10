@@ -349,11 +349,16 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         fn padToFrameSize(self: *Self, memsize: usize) usize {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             const meta_memsize = std.math.max(memsize + meta_size, min_frame_size);
-            if (meta_memsize < conf.page_size) {
-                return unsafeCeilPowerOfTwo(usize, meta_memsize);
-            } else {
-                return unsafeAlignForward(meta_memsize);
-            }
+            return std.math.min(unsafeCeilPowerOfTwo(usize, meta_memsize), unsafeAlignForward(meta_memsize));
+            // More byte-efficient of this:
+            // const meta_memsize = memsize + meta_size;
+            // if (meta_memsize <= min_frame_size) {
+            //     return min_frame_size;
+            // } else if (meta_memsize < conf.page_size) {
+            //     return ceilPowerOfTwo(usize, meta_memsize);
+            // } else {
+            //     return std.mem.alignForward(meta_memsize, conf.page_size);
+            // }
         }
 
         fn freeListOfSize(self: *Self, frame_size: usize) *FreeList {
