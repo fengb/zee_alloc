@@ -231,7 +231,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
         fn allocNode(self: *Self, memsize: usize) !*Frame {
             @setRuntimeSafety(comptime conf.validation.useInternal());
-            const alloc_size = std.mem.alignForward(memsize + meta_size, conf.page_size);
+            const alloc_size = unsafeAlignForward(memsize + meta_size);
             const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, [_]u8{}, 0, alloc_size, u29(conf.page_size));
             return Frame.init(rawData);
         }
@@ -340,13 +340,19 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             return @intCast(std.math.Log2Int(T), T.bit_count - 1 - @clz(T, x));
         }
 
+        fn unsafeAlignForward(size: usize) usize {
+            @setRuntimeSafety(comptime conf.validation.useInternal());
+            const forward = size + (conf.page_size - 1);
+            return forward & ~(conf.page_size - 1);
+        }
+
         fn padToFrameSize(self: *Self, memsize: usize) usize {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             const meta_memsize = std.math.max(memsize + meta_size, min_frame_size);
             if (meta_memsize < conf.page_size) {
                 return unsafeCeilPowerOfTwo(usize, meta_memsize);
             } else {
-                return std.mem.alignForward(meta_memsize, conf.page_size);
+                return unsafeAlignForward(meta_memsize);
             }
         }
 
@@ -504,7 +510,8 @@ pub const ExportC = struct {
                 if (size == 0) {
                     return null;
                 }
-                const result = conf.allocator.alloc(u8, size) catch return null;
+                //const result = conf.allocator.alloc(u8, size) catch return null;
+                const result = conf.allocator.reallocFn(conf.allocator, [_]u8{}, 0, size, 1) catch return null;
                 return result.ptr;
             }
             extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
@@ -512,7 +519,7 @@ pub const ExportC = struct {
                 const c_ptr = @noInlineCall(malloc, size);
                 if (c_ptr) |ptr| {
                     const p = @ptrCast([*]u8, ptr);
-                    std.mem.set(u8, p[0..size], 0);
+                    @memset(p, 0, size);
                 }
                 return c_ptr;
             }
@@ -523,7 +530,8 @@ pub const ExportC = struct {
                 } else if (c_ptr) |ptr| {
                     // Use a synthetic slice
                     const p = @ptrCast([*]u8, ptr);
-                    const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
+                    //const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
+                    const result = conf.allocator.reallocFn(conf.allocator, p[0..1], 1, new_size, 1) catch return null;
                     return @ptrCast(*c_void, result.ptr);
                 } else {
                     return @noInlineCall(malloc, new_size);
@@ -533,7 +541,8 @@ pub const ExportC = struct {
                 if (c_ptr) |ptr| {
                     // Use a synthetic slice. zee_alloc will free via corresponding metadata.
                     const p = @ptrCast([*]u8, ptr);
-                    conf.allocator.free(p[0..1]);
+                    //conf.allocator.free(p[0..1]);
+                    _ = conf.allocator.shrinkFn(conf.allocator, p[0..1], 1, 0, 0);
                 }
             }
         };
