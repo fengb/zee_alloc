@@ -3,8 +3,8 @@ const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 const meta_size = 2 * @sizeOf(usize);
-pub const min_payload_size = meta_size;
-pub const min_frame_size = meta_size + min_payload_size;
+const min_payload_size = meta_size;
+const min_frame_size = meta_size + min_payload_size;
 
 const jumbo_index = 0;
 const page_index = 1;
@@ -116,7 +116,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             payload: [min_payload_size]u8,
 
             fn isCorrectSize(memsize: usize) bool {
-                return memsize % conf.page_size == 0 or std.math.isPowerOfTwo(memsize) and memsize >= min_frame_size;
+                return memsize >= min_frame_size and (memsize % conf.page_size == 0 or std.math.isPowerOfTwo(memsize));
             }
 
             pub fn init(raw_bytes: []u8) *Frame {
@@ -192,7 +192,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 self.first = node;
             }
 
-            pub fn remove(self: *FreeList, target: *Frame) void {
+            pub fn remove(self: *FreeList, target: *Frame) !void {
                 var iter = self.root();
                 while (iter.next) |next| : (iter = next) {
                     if (next == target) {
@@ -200,6 +200,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                         return;
                     }
                 }
+
+                return error.ElementNotFound;
             }
 
             pub fn removeAfter(self: *FreeList, ref: *Frame) *Frame {
@@ -239,7 +241,6 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             var search_size = self.padToFrameSize(memsize);
 
             while (true) : (search_size *= 2) {
-                @setRuntimeSafety(comptime conf.validation.useInternal());
                 const i = self.freeListIndex(search_size);
                 var free_list = &self.free_lists[i];
 
@@ -301,6 +302,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         }
 
         fn free(self: *Self, target: *Frame) void {
+            @setRuntimeSafety(comptime conf.validation.useInternal());
             var node = target;
             if (conf.buddy_strategy == .Coalesce) {
                 while (node.frame_size < conf.page_size) : (node.frame_size *= 2) {
@@ -309,13 +311,12 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                     const node_addr = @ptrToInt(node);
                     const buddy_addr = node_addr ^ node.frame_size;
 
-                    @setRuntimeSafety(comptime conf.validation.useInternal());
                     const buddy = Frame.restoreAddr(buddy_addr);
                     if (buddy.isAllocated() or buddy.frame_size != node.frame_size) {
                         break;
                     }
 
-                    self.freeListOfSize(buddy.frame_size).remove(buddy);
+                    self.freeListOfSize(buddy.frame_size).remove(buddy) catch unreachable;
 
                     // Use the lowest address as the new root
                     node = Frame.restoreAddr(node_addr & buddy_addr);
@@ -416,7 +417,6 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             @setRuntimeSafety(comptime conf.validation.useExternal());
             const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
-                @setRuntimeSafety(comptime conf.validation.useExternal());
                 conf.validation.assertExternal(node.isAllocated());
                 @noInlineCall(self.free, node);
                 return [_]u8{};
