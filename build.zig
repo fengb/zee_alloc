@@ -13,13 +13,12 @@ pub fn build(b: *Builder) void {
 
     const build_docs = b.addSystemCommand([_][]const u8{
         b.zig_exe,
-        "test",
-        "src/main.zig",
+        "build-lib",
+        "src/wasm_exports.zig",
         "-femit-docs",
         "-fno-emit-bin",
         "-target",
-        // TODO: switch to wasm32 once docgen gains support
-        "riscv64-linux-musl",
+        "wasm32-freestanding",
         "--output-dir",
         ".",
     });

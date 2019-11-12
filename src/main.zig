@@ -220,10 +220,9 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
         };
 
-        pub const wasm_allocator = init: {
-            var wasm = init(&wasm_page_allocator);
-            break :init &wasm.allocator;
-        };
+        /// The definitive™ way of using `ZeeAlloc`
+        pub const wasm_allocator = &_wasm.allocator;
+        var _wasm = init(&wasm_page_allocator);
 
         backing_allocator: *Allocator,
 
@@ -511,11 +510,11 @@ var wasm_page_allocator = init: {
 };
 
 pub const ExportC = struct {
+    allocator: *std.mem.Allocator,
     malloc: bool = true,
     free: bool = true,
     calloc: bool = false,
     realloc: bool = false,
-    allocator: *std.mem.Allocator,
 
     pub fn run(comptime conf: ExportC) void {
         const Funcs = struct {
