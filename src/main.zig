@@ -509,70 +509,68 @@ var wasm_page_allocator = init: {
     };
 };
 
-pub const ExportC = struct {
+pub fn exportC(comptime conf: struct {
     allocator: *std.mem.Allocator,
     malloc: bool = true,
     free: bool = true,
     calloc: bool = false,
     realloc: bool = false,
+}) void {
+    const Funcs = struct {
+        extern fn malloc(size: usize) ?*c_void {
+            if (size == 0) {
+                return null;
+            }
+            //const result = conf.allocator.alloc(u8, size) catch return null;
+            const result = conf.allocator.reallocFn(conf.allocator, [_]u8{}, 0, size, 1) catch return null;
+            return result.ptr;
+        }
+        extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
+            const size = num_elements *% element_size;
+            const c_ptr = @noInlineCall(malloc, size);
+            if (c_ptr) |ptr| {
+                const p = @ptrCast([*]u8, ptr);
+                @memset(p, 0, size);
+            }
+            return c_ptr;
+        }
+        extern fn realloc(c_ptr: ?*c_void, new_size: usize) ?*c_void {
+            if (new_size == 0) {
+                @noInlineCall(free, c_ptr);
+                return null;
+            } else if (c_ptr) |ptr| {
+                // Use a synthetic slice
+                const p = @ptrCast([*]u8, ptr);
+                //const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
+                const result = conf.allocator.reallocFn(conf.allocator, p[0..1], 1, new_size, 1) catch return null;
+                return @ptrCast(*c_void, result.ptr);
+            } else {
+                return @noInlineCall(malloc, new_size);
+            }
+        }
+        extern fn free(c_ptr: ?*c_void) void {
+            if (c_ptr) |ptr| {
+                // Use a synthetic slice. zee_alloc will free via corresponding metadata.
+                const p = @ptrCast([*]u8, ptr);
+                //conf.allocator.free(p[0..1]);
+                _ = conf.allocator.shrinkFn(conf.allocator, p[0..1], 1, 0, 0);
+            }
+        }
+    };
 
-    pub fn run(comptime conf: ExportC) void {
-        const Funcs = struct {
-            extern fn malloc(size: usize) ?*c_void {
-                if (size == 0) {
-                    return null;
-                }
-                //const result = conf.allocator.alloc(u8, size) catch return null;
-                const result = conf.allocator.reallocFn(conf.allocator, [_]u8{}, 0, size, 1) catch return null;
-                return result.ptr;
-            }
-            extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
-                const size = num_elements *% element_size;
-                const c_ptr = @noInlineCall(malloc, size);
-                if (c_ptr) |ptr| {
-                    const p = @ptrCast([*]u8, ptr);
-                    @memset(p, 0, size);
-                }
-                return c_ptr;
-            }
-            extern fn realloc(c_ptr: ?*c_void, new_size: usize) ?*c_void {
-                if (new_size == 0) {
-                    @noInlineCall(free, c_ptr);
-                    return null;
-                } else if (c_ptr) |ptr| {
-                    // Use a synthetic slice
-                    const p = @ptrCast([*]u8, ptr);
-                    //const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
-                    const result = conf.allocator.reallocFn(conf.allocator, p[0..1], 1, new_size, 1) catch return null;
-                    return @ptrCast(*c_void, result.ptr);
-                } else {
-                    return @noInlineCall(malloc, new_size);
-                }
-            }
-            extern fn free(c_ptr: ?*c_void) void {
-                if (c_ptr) |ptr| {
-                    // Use a synthetic slice. zee_alloc will free via corresponding metadata.
-                    const p = @ptrCast([*]u8, ptr);
-                    //conf.allocator.free(p[0..1]);
-                    _ = conf.allocator.shrinkFn(conf.allocator, p[0..1], 1, 0, 0);
-                }
-            }
-        };
-
-        if (conf.malloc) {
-            @export("malloc", Funcs.malloc, .Strong);
-        }
-        if (conf.calloc) {
-            @export("calloc", Funcs.calloc, .Strong);
-        }
-        if (conf.realloc) {
-            @export("realloc", Funcs.realloc, .Strong);
-        }
-        if (conf.free) {
-            @export("free", Funcs.free, .Strong);
-        }
+    if (conf.malloc) {
+        @export("malloc", Funcs.malloc, .Strong);
     }
-};
+    if (conf.calloc) {
+        @export("calloc", Funcs.calloc, .Strong);
+    }
+    if (conf.realloc) {
+        @export("realloc", Funcs.realloc, .Strong);
+    }
+    if (conf.free) {
+        @export("free", Funcs.free, .Strong);
+    }
+}
 
 // Tests
 
