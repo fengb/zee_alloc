@@ -12,6 +12,8 @@ const page_index = 1;
 pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
 pub const Config = struct {
+    /// ZeeAlloc will request a multiple of `page_size` from the backing allocator.
+    /// **Must** be a power of two.
     page_size: usize = std.math.max(std.mem.page_size, 65536), // 64K ought to be enough for everybody
     validation: Validation = .External,
 
@@ -19,54 +21,59 @@ pub const Config = struct {
     buddy_strategy: BuddyStrategy = .Fast,
     shrink_strategy: ShrinkStrategy = .Defer,
 
-    const JumboMatchStrategy = enum {
+    pub const JumboMatchStrategy = enum {
         /// Use the frame that wastes the least space
         /// Scans the entire jumbo freelist, which is slower but keeps memory pretty tidy
         Closest,
 
         /// Use only exact matches
-        /// -75 bytes vs .Closest
+        /// -75 bytes vs `.Closest`
         /// Similar performance to Closest if allocation sizes are consistent throughout lifetime
         Exact,
 
         /// Use the first frame that fits
-        /// -75 bytes vs .Closest
+        /// -75 bytes vs `.Closest`
         /// Initially faster to allocate but causes major fragmentation issues
         First,
     };
 
-    const BuddyStrategy = enum {
+    pub const BuddyStrategy = enum {
         /// Return the raw free frame immediately
         /// Generally faster because it does not recombine or resplit frames,
         /// but it also requires more underlying memory
         Fast,
 
         /// Recombine with free buddies to reclaim storage
-        /// +153 bytes vs .Fast
+        /// +153 bytes vs `.Fast`
         /// More efficient use of existing memory at the cost of cycles and bytes
         Coalesce,
     };
 
-    const ShrinkStrategy = enum {
+    pub const ShrinkStrategy = enum {
         /// Return a smaller view into the same frame
-        /// Faster because it does actually shrink, but never reclaims space until freed
+        /// Faster because it ignores shrink, but never reclaims space until freed
         Defer,
 
         /// Split the frame into smallest usable chunk
-        /// +112 bytes vs .Defer
+        /// +112 bytes vs `.Defer`
         /// Better at reclaiming non-jumbo memory, but never reclaims jumbo until freed
         Chunkify,
 
         /// Find and swap a replacement frame
-        /// +295 bytes vs .Defer
+        /// +295 bytes vs `.Defer`
         /// Reclaims all memory, but generally slower
         Swap,
     };
 
-    const Validation = enum {
-        Dev, // Enable all validations, including library internals
-        External, // Only validate external boundaries (e.g. realloc or free)
-        Unsafe, // Turn off all validations
+    pub const Validation = enum {
+        /// Enable all validations, including library internals
+        Dev,
+
+        /// Only validate external boundaries — e.g. `realloc` or `free`
+        External,
+
+        /// Turn off all validations — pretend this library is `--release-small`
+        Unsafe,
 
         fn useInternal(comptime self: Validation) bool {
             if (builtin.mode == .Debug) {
@@ -104,6 +111,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
     return struct {
         const Self = @This();
+
+        const config = conf;
 
         // Synthetic representation -- should not be created directly, but instead carved out of []u8 bytes
         const Frame = packed struct {
@@ -180,8 +189,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
 
             pub fn root(self: *FreeList) *Frame {
-                // FreeList.first == Frame.next
-                // This allows for more graceful iteration without needing a back reference.
+                // Due to packed struct layout, FreeList.first == Frame.next
+                // This enables more graceful iteration without needing a back reference.
                 // Since this is not a full frame, accessing any other field will corrupt memory.
                 // Thar be dragons 🐉
                 return @ptrCast(*Frame, self);
@@ -218,7 +227,6 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
         backing_allocator: *Allocator,
 
-        page_size: usize = conf.page_size,
         free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
         allocator: Allocator = Allocator{
             .reallocFn = realloc,
@@ -575,18 +583,19 @@ test "ZeeAlloc helpers" {
     var buf: [0]u8 = undefined;
     var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
     var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
+    const page_size = ZeeAllocDefaults.config.page_size;
 
     @"freeListIndex": {
-        testing.expectEqual(zee_alloc.freeListIndex(zee_alloc.page_size), page_index);
-        testing.expectEqual(zee_alloc.freeListIndex(zee_alloc.page_size / 2), page_index + 1);
-        testing.expectEqual(zee_alloc.freeListIndex(zee_alloc.page_size / 4), page_index + 2);
+        testing.expectEqual(zee_alloc.freeListIndex(page_size), page_index);
+        testing.expectEqual(zee_alloc.freeListIndex(page_size / 2), page_index + 1);
+        testing.expectEqual(zee_alloc.freeListIndex(page_size / 4), page_index + 2);
     }
 
     @"padToFrameSize": {
-        testing.expectEqual(zee_alloc.padToFrameSize(zee_alloc.page_size - meta_size), zee_alloc.page_size);
-        testing.expectEqual(zee_alloc.padToFrameSize(zee_alloc.page_size), 2 * zee_alloc.page_size);
-        testing.expectEqual(zee_alloc.padToFrameSize(zee_alloc.page_size - meta_size + 1), 2 * zee_alloc.page_size);
-        testing.expectEqual(zee_alloc.padToFrameSize(2 * zee_alloc.page_size), 3 * zee_alloc.page_size);
+        testing.expectEqual(zee_alloc.padToFrameSize(page_size - meta_size), page_size);
+        testing.expectEqual(zee_alloc.padToFrameSize(page_size), 2 * page_size);
+        testing.expectEqual(zee_alloc.padToFrameSize(page_size - meta_size + 1), 2 * page_size);
+        testing.expectEqual(zee_alloc.padToFrameSize(2 * page_size), 3 * page_size);
     }
 }
 
