@@ -17,6 +17,9 @@ pub fn build(b: *Builder) void {
         "src/main.zig",
         "-femit-docs",
         "-fno-emit-bin",
+        "-target",
+        // TODO: switch to wasm32 once docgen gains support
+        "riscv64-linux-musl",
         "--output-dir",
         ".",
     });
