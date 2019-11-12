@@ -11,7 +11,7 @@ const page_index = 1;
 
 pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
-const Config = struct {
+pub const Config = struct {
     page_size: usize = std.math.max(std.mem.page_size, 65536), // 64K ought to be enough for everybody
     validation: Validation = .External,
 
