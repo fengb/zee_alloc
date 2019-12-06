@@ -239,7 +239,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         fn allocNode(self: *Self, memsize: usize) !*Frame {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             const alloc_size = unsafeAlignForward(memsize + meta_size);
-            const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, [_]u8{}, 0, alloc_size, conf.page_size);
+            const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, &[_]u8{}, 0, alloc_size, conf.page_size);
             return Frame.init(rawData);
         }
 
@@ -437,7 +437,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             if (new_size == 0) {
                 conf.validation.assertExternal(node.isAllocated());
                 @noInlineCall(self.free, node);
-                return [_]u8{};
+                return &[_]u8{};
             } else switch (conf.shrink_strategy) {
                 .Defer => return node.payloadSlice(0, new_size),
                 .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
@@ -523,7 +523,7 @@ pub const ExportC = struct {
                     return null;
                 }
                 //const result = conf.allocator.alloc(u8, size) catch return null;
-                const result = conf.allocator.reallocFn(conf.allocator, [_]u8{}, 0, size, 1) catch return null;
+                const result = conf.allocator.reallocFn(conf.allocator, &[_]u8{}, 0, size, 1) catch return null;
                 return result.ptr;
             }
             extern fn calloc(num_elements: usize, element_size: usize) ?*c_void {
