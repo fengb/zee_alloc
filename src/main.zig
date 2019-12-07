@@ -289,6 +289,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         }
 
         fn chunkify(self: *Self, node: *Frame, target_size: usize) []u8 {
+            @setCold(config.shrink_strategy != .Defer);
             @setRuntimeSafety(comptime conf.validation.useInternal());
             conf.validation.assertInternal(target_size <= node.payloadSize());
 
@@ -309,6 +310,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         }
 
         fn free(self: *Self, target: *Frame) void {
+            @setCold(true);
             @setRuntimeSafety(comptime conf.validation.useInternal());
             var node = target;
             if (conf.buddy_strategy == .Coalesce) {
@@ -400,7 +402,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 if (new_size <= node.payloadSize()) {
                     switch (conf.shrink_strategy) {
                         .Defer => return node.payloadSlice(0, new_size),
-                        .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
+                        .Chunkify => return self.chunkify(node, new_size),
                         .Swap => {
                             if (self.padToFrameSize(new_size) == node.frame_size) {
                                 return node.payloadSlice(0, new_size);
@@ -413,11 +415,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
             const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
             new_node.markAllocated();
-            const result = switch (conf.shrink_strategy) {
-                .Defer => self.chunkify(new_node, new_size),
-                .Chunkify => @noInlineCall(self.chunkify, new_node, new_size),
-                .Swap => @noInlineCall(self.chunkify, new_node, new_size),
-            };
+            const result = self.chunkify(new_node, new_size);
 
             if (current_node) |node| {
                 if (conf.shrink_strategy == .Swap) {
@@ -425,7 +423,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 } else {
                     std.mem.copy(u8, result, old_mem);
                 }
-                @noInlineCall(self.free, node);
+                self.free(node);
             }
             return result;
         }
@@ -436,12 +434,12 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
             if (new_size == 0) {
                 conf.validation.assertExternal(node.isAllocated());
-                @noInlineCall(self.free, node);
+                self.free(node);
                 return &[_]u8{};
             } else switch (conf.shrink_strategy) {
                 .Defer => return node.payloadSlice(0, new_size),
-                .Chunkify => return @noInlineCall(self.chunkify, node, new_size),
-                .Swap => return realloc(allocator, old_mem, old_align, new_size, new_align) catch @noInlineCall(self.chunkify, node, new_size),
+                .Chunkify => return self.chunkify(node, new_size),
+                .Swap => return realloc(allocator, old_mem, old_align, new_size, new_align) catch self.chunkify(node, new_size),
             }
         }
 
