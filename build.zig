@@ -11,7 +11,7 @@ pub fn build(b: *Builder) void {
     const test_step = b.step("test", "Run library tests");
     test_step.dependOn(&main_tests.step);
 
-    const build_docs = b.addSystemCommand([_][]const u8{
+    const build_docs = b.addSystemCommand(&[_][]const u8{
         b.zig_exe,
         "build-lib",
         "src/wasm_exports.zig",
