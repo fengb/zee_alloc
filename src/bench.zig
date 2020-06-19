@@ -16,7 +16,7 @@ pub fn benchmark(comptime B: type) !void {
 
     comptime var max_fn_name_len = 0;
     const functions = comptime blk: {
-        var res: []const Decl = [_]Decl{};
+        var res: []const Decl = &[_]Decl{};
         for (meta.declarations(B)) |decl| {
             if (decl.data != Decl.Data.Fn)
                 continue;
@@ -34,13 +34,13 @@ pub fn benchmark(comptime B: type) !void {
     const max_name_spaces = comptime math.max(max_fn_name_len + digits(u64, 10, args.len) + 1, "Benchmark".len);
 
     var timer = try time.Timer.start();
-    debug.warn("\n");
-    debug.warn("Benchmark");
+    debug.warn("\n", .{});
+    debug.warn("Benchmark", .{});
     nTimes(' ', (max_name_spaces - "Benchmark".len) + 1);
     nTimes(' ', digits(u64, 10, math.maxInt(u64)) - "Mean(ns)".len);
-    debug.warn("Mean(ns)\n");
+    debug.warn("Mean(ns)\n", .{});
     nTimes('-', max_name_spaces + digits(u64, 10, math.maxInt(u64)) + 1);
-    debug.warn("\n");
+    debug.warn("\n", .{});
 
     inline for (functions) |def| {
         for (args) |arg, index| {
@@ -50,9 +50,9 @@ pub fn benchmark(comptime B: type) !void {
             while (i < iterations) : (i += 1) {
                 timer.reset();
 
-                const res = switch (@typeOf(arg)) {
-                    void => @noInlineCall(@field(B, def.name)),
-                    else => @noInlineCall(@field(B, def.name), arg),
+                const res = switch (@TypeOf(arg)) {
+                    void => @field(B, def.name)(),
+                    else => @field(B, def.name)(arg),
                 };
 
                 const runtime = timer.read();
@@ -62,17 +62,17 @@ pub fn benchmark(comptime B: type) !void {
 
             const runtime_mean = @intCast(u64, runtime_sum / iterations);
 
-            debug.warn("{}.{}", def.name, index);
+            debug.warn("{}.{}", .{ def.name, index });
             nTimes(' ', (max_name_spaces - (def.name.len + digits(u64, 10, index) + 1)) + 1);
             nTimes(' ', digits(u64, 10, math.maxInt(u64)) - digits(u64, 10, runtime_mean));
-            debug.warn("{}\n", runtime_mean);
+            debug.warn("{}\n", .{runtime_mean});
         }
     }
 }
 
 /// Pretend to use the value so the optimizer cant optimize it out.
 fn doNotOptimize(val: var) void {
-    const T = @typeOf(val);
+    const T = @TypeOf(val);
     var store: T = undefined;
     @ptrCast(*volatile T, &store).* = val;
 }
@@ -95,7 +95,7 @@ fn digits(comptime N: type, comptime base: comptime_int, n: N) usize {
 fn nTimes(c: u8, times: usize) void {
     var i: usize = 0;
     while (i < times) : (i += 1)
-        debug.warn("{c}", c);
+        debug.warn("{c}", .{c});
 }
 
 const zee_alloc = @import("main.zig");
@@ -149,19 +149,19 @@ test "ZeeAlloc benchmark" {
             a.benchAllocator(&za.allocator, false) catch unreachable;
         }
 
-        pub fn DirectAllocator(a: Arg) void {
-            a.benchAllocator(std.heap.direct_allocator, true) catch unreachable;
+        pub fn PageAllocator(a: Arg) void {
+            a.benchAllocator(std.heap.page_allocator, true) catch unreachable;
         }
 
-        pub fn Arena_DirectAllocator(a: Arg) void {
-            var arena = std.heap.ArenaAllocator.init(std.heap.direct_allocator);
+        pub fn Arena_PageAllocator(a: Arg) void {
+            var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
             defer arena.deinit();
 
             a.benchAllocator(&arena.allocator, false) catch unreachable;
         }
 
-        pub fn ZeeAlloc_DirectAllocator(a: Arg) void {
-            var za = zee_alloc.ZeeAllocDefaults.init(std.heap.direct_allocator);
+        pub fn ZeeAlloc_PageAllocator(a: Arg) void {
+            var za = zee_alloc.ZeeAllocDefaults.init(std.heap.page_allocator);
 
             a.benchAllocator(&za.allocator, false) catch unreachable;
         }
