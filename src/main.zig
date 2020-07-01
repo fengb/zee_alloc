@@ -58,11 +58,6 @@ pub const Config = struct {
         /// +112 bytes vs `.Defer`
         /// Better at reclaiming non-jumbo memory, but never reclaims jumbo until freed
         Chunkify,
-
-        /// Find and swap a replacement frame
-        /// +295 bytes vs `.Defer`
-        /// Reclaims all memory, but generally slower
-        Swap,
     };
 
     pub const Validation = enum {
@@ -228,8 +223,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
         free_lists: [size_buckets]FreeList = [_]FreeList{FreeList.init()} ** size_buckets,
         allocator: Allocator = Allocator{
-            .reallocFn = realloc,
-            .shrinkFn = shrink,
+            .allocFn = alloc,
+            .resizeFn = resize,
         },
 
         pub fn init(backing_allocator: *Allocator) Self {
@@ -239,7 +234,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         fn allocNode(self: *Self, memsize: usize) !*Frame {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             const alloc_size = unsafeAlignForward(memsize + meta_size);
-            const rawData = try self.backing_allocator.reallocFn(self.backing_allocator, &[_]u8{}, 0, alloc_size, conf.page_size);
+            const rawData = try self.backing_allocator.allocFn(self.backing_allocator, alloc_size, conf.page_size, 0);
             return Frame.init(rawData);
         }
 
@@ -390,56 +385,31 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             // }
         }
 
-        fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
+        fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29) Allocator.Error![]u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
-            if (new_align > min_frame_size) {
+            if (ptr_align > min_frame_size) {
                 return error.OutOfMemory;
             }
 
-            const current_node = if (old_mem.len == 0) null else blk: {
-                @setRuntimeSafety(comptime conf.validation.useExternal());
-                const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
-                if (new_size <= node.payloadSize()) {
-                    switch (conf.shrink_strategy) {
-                        .Defer => return node.payloadSlice(0, new_size),
-                        .Chunkify => return self.chunkify(node, new_size),
-                        .Swap => {
-                            if (self.padToFrameSize(new_size) == node.frame_size) {
-                                return node.payloadSlice(0, new_size);
-                            }
-                        },
-                    }
-                }
-                break :blk node;
-            };
-
-            const new_node = self.findFreeNode(new_size) orelse try self.allocNode(new_size);
-            new_node.markAllocated();
-            const result = self.chunkify(new_node, new_size);
-
-            if (current_node) |node| {
-                if (conf.shrink_strategy == .Swap) {
-                    std.mem.copy(u8, result, old_mem[0..std.math.min(old_mem.len, new_size)]);
-                } else {
-                    std.mem.copy(u8, result, old_mem);
-                }
-                self.free(node);
-            }
+            const node = self.findFreeNode(n) orelse try self.allocNode(n);
+            node.markAllocated();
+            const result = self.chunkify(node, n);
             return result;
         }
 
-        fn shrink(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) []u8 {
+        fn resize(allocator: *Allocator, buf: []u8, new_size: usize, len_align: u29) Allocator.Error!usize {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             @setRuntimeSafety(comptime conf.validation.useExternal());
-            const node = Frame.restorePayload(old_mem.ptr) catch unreachable;
+            const node = Frame.restorePayload(buf.ptr) catch unreachable;
+            conf.validation.assertExternal(node.isAllocated());
             if (new_size == 0) {
-                conf.validation.assertExternal(node.isAllocated());
                 self.free(node);
-                return &[_]u8{};
+                return 0;
+            } else if (new_size > node.payloadSize()) {
+                return error.OutOfMemory;
             } else switch (conf.shrink_strategy) {
-                .Defer => return node.payloadSlice(0, new_size),
-                .Chunkify => return self.chunkify(node, new_size),
-                .Swap => return realloc(allocator, old_mem, old_align, new_size, new_align) catch self.chunkify(node, new_size),
+                .Defer => return new_size,
+                .Chunkify => self.chunkify(node, new_size).len,
             }
         }
 
@@ -473,37 +443,34 @@ fn assertIf(comptime run_assert: bool, ok: bool) void {
     if (!ok) unreachable;
 }
 
-// https://github.com/ziglang/zig/issues/2291
-extern fn @"llvm.wasm.memory.grow.i32"(u32, u32) i32;
 var wasm_page_allocator = init: {
     if (builtin.arch != .wasm32) {
         @compileError("wasm allocator is only available for wasm32 arch");
     }
 
-    // std.heap.wasm_allocator is designed for arbitrary sizing
-    // We only need page sizing, and this lets us stay super small
+    // std.heap.WasmPageAllocator is designed for reusing pages
+    // We never free, so this lets us stay super small
     const WasmPageAllocator = struct {
-        pub fn realloc(allocator: *Allocator, old_mem: []u8, old_align: u29, new_size: usize, new_align: u29) Allocator.Error![]u8 {
+        fn alloc(allocator: *Allocator, n: usize, alignment: u29, len_align: u29) Allocator.Error![]u8 {
             const is_debug = builtin.mode == .Debug;
             @setRuntimeSafety(is_debug);
-            assertIf(is_debug, old_mem.len == 0); // Shouldn't be actually reallocating
-            assertIf(is_debug, new_size % std.mem.page_size == 0); // Should only be allocating page size chunks
-            assertIf(is_debug, new_align % std.mem.page_size == 0); // Should only align to page_size increments
+            assertIf(is_debug, n % std.mem.page_size == 0); // Should only be allocating page size chunks
+            assertIf(is_debug, alignment % std.mem.page_size == 0); // Should only align to page_size increments
 
-            const requested_page_count = @intCast(u32, new_size / std.mem.page_size);
-            const prev_page_count = @"llvm.wasm.memory.grow.i32"(0, requested_page_count);
+            const requested_page_count = @intCast(u32, n / std.mem.page_size);
+            const prev_page_count = @wasmMemoryGrow(0, requested_page_count);
             if (prev_page_count < 0) {
                 return error.OutOfMemory;
             }
 
             const start_ptr = @intToPtr([*]u8, @intCast(usize, prev_page_count) * std.mem.page_size);
-            return start_ptr[0..new_size];
+            return start_ptr[0..n];
         }
     };
 
     break :init Allocator{
-        .reallocFn = WasmPageAllocator.realloc,
-        .shrinkFn = undefined, // Shouldn't be shrinking / freeing
+        .allocFn = WasmPageAllocator.alloc,
+        .resizeFn = undefined, // Shouldn't be shrinking / freeing
     };
 };
 
@@ -521,7 +488,7 @@ pub const ExportC = struct {
                     return null;
                 }
                 //const result = conf.allocator.alloc(u8, size) catch return null;
-                const result = conf.allocator.reallocFn(conf.allocator, &[_]u8{}, 0, size, 1) catch return null;
+                const result = conf.allocator.allocFn(conf.allocator, size, 1, 1) catch return null;
                 return result.ptr;
             }
             fn calloc(num_elements: usize, element_size: usize) callconv(.C) ?*c_void {
@@ -540,8 +507,7 @@ pub const ExportC = struct {
                 } else if (c_ptr) |ptr| {
                     // Use a synthetic slice
                     const p = @ptrCast([*]u8, ptr);
-                    //const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
-                    const result = conf.allocator.reallocFn(conf.allocator, p[0..1], 1, new_size, 1) catch return null;
+                    const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
                     return @ptrCast(*c_void, result.ptr);
                 } else {
                     return @call(.{ .modifier = .never_inline }, malloc, .{new_size});
@@ -552,7 +518,7 @@ pub const ExportC = struct {
                     // Use a synthetic slice. zee_alloc will free via corresponding metadata.
                     const p = @ptrCast([*]u8, ptr);
                     //conf.allocator.free(p[0..1]);
-                    _ = conf.allocator.shrinkFn(conf.allocator, p[0..1], 1, 0, 0);
+                    _ = conf.allocator.resizeFn(conf.allocator, p[0..1], 0, 0) catch unreachable;
                 }
             }
         };
@@ -779,7 +745,7 @@ test "ZeeAlloc with FixedBufferAllocator" {
     var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
     try testAllocator(&zee_alloc.allocator);
-    try testAllocatorAligned(&zee_alloc.allocator, 8);
+    // try testAllocatorAligned(&zee_alloc.allocator, 8);
     // try testAllocatorLargeAlignment(&zee_alloc.allocator);
     // try testAllocatorAlignedShrink(&zee_alloc.allocator);
 }
