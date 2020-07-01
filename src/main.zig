@@ -283,7 +283,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
         }
 
-        fn chunkify(self: *Self, node: *Frame, target_size: usize) []u8 {
+        fn chunkify(self: *Self, node: *Frame, target_size: usize, len_align: u29) usize {
             @setCold(config.shrink_strategy != .Defer);
             @setRuntimeSafety(comptime conf.validation.useInternal());
             conf.validation.assertInternal(target_size <= node.payloadSize());
@@ -301,7 +301,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 }
             }
 
-            return node.payloadSlice(0, target_size);
+            return std.mem.alignAllocLen(node.payloadSize(), target_size, len_align);
         }
 
         fn free(self: *Self, target: *Frame) void {
@@ -393,8 +393,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
             const node = self.findFreeNode(n) orelse try self.allocNode(n);
             node.markAllocated();
-            const result = self.chunkify(node, n);
-            return result;
+            const len = self.chunkify(node, n, len_align);
+            return node.payloadSlice(0, len);
         }
 
         fn resize(allocator: *Allocator, buf: []u8, new_size: usize, len_align: u29) Allocator.Error!usize {
@@ -409,7 +409,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 return error.OutOfMemory;
             } else switch (conf.shrink_strategy) {
                 .Defer => return new_size,
-                .Chunkify => self.chunkify(node, new_size).len,
+                .Chunkify => return self.chunkify(node, new_size, len_align),
             }
         }
 
