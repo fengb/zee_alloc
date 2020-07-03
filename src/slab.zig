@@ -8,27 +8,60 @@ pub const Config = struct {
 
 pub fn ZeeAlloc(comptime conf: Config) type {
     const Slab = extern struct {
-        const alignment = std.mem.page_size;
-
-        next: ?*Slab align(alignment) = null,
+        next: ?*Slab align(std.mem.page_size) = null,
         size: usize,
-        data: [conf.page_size - 2 * @sizeOf(usize)]u8,
+        pad: [conf.page_size - 2 * @sizeOf(usize)]u8,
 
-        fn fromMemPtr(ptr: *u8) *Slab {
-            return @intToPtr(*Slab, @ptrToInt(ptr));
+        fn fromMemPtr(ptr: [*]u8) *Slab {
+            const addr = std.mem.alignBackward(@ptrToInt(ptr), conf.page_size);
+            return @intToPtr(*Slab, addr);
+        }
+
+        fn meta(self: *Slab) []u64 {
+            return &[0]u64{};
+        }
+
+        fn alloc(self: *Slab) ![]u64 {
+            for (self.meta) |*chunk, i| {
+                if (chunk.* != 0) {
+                    const free = @ctz(chunk.*);
+
+                    const index = 64 * i + free;
+
+                    const mask = @as(u64, 1) << free;
+                    chunk.* &= ~mask;
+
+                    return self.data(index);
+                }
+            }
+
+            return error.OutOfMemory;
+        }
+
+        fn data(self: *Slab, item_idx: usize) []u8 {
+            const raw_bytes = std.mem.asBytes(self);
+            const meta_offset = self.meta().len;
+            const index = (meta_offset + raw_bytes) * self.size;
+            return raw_bytes[index..][0..self.size];
+        }
+
+        fn jumboPayload(self: *const Slab) ![]u8 {
+            return self.pad.ptr[0..size];
         }
     };
 
     return struct {
         const Self = @This();
 
-        slabs: [8]?*Slab, // slab[0] = 4 bytes, slab[1] = 8 bytes, etc.
+        slabs: [13]?*Slab, // slab[0] = 4 bytes, slab[1] = 8 bytes, etc.
         backing_allocator: *std.mem.Allocator,
 
         allocator: Allocator = Allocator{
             .allocFn = alloc,
             .resizeFn = resize,
         },
+
+        const full_signal = @intToPtr(*Slab, std.math.maxInt(usize));
 
         pub fn init(allocator: *std.mem.Allocator) Self {
             return .{
@@ -41,10 +74,20 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             const padded_size = self.padToSize(n);
 
-            const result = self.findFreeMem(padded_size) orelse blk: {
-                const new_slab = try self.allocSlab(padded_size);
-                break :blk new_slab.alloc() catch unreachable;
+            // TODO: handle jumbo
+            const idx = self.findSlabIndex(padded_size);
+            const slab = self.slabs[idx] orelse blk: {
+                const new_slab = self.backing_allocator.create(Slab);
+                new_slab.next = null;
+                new_slab.size = padded_size;
+                self.slabs[idx] = new_slab;
+                break :blk new_slab;
             };
+            const result = slab.alloc() catch unreachable;
+            if (slab.isFull()) {
+                self.slabs[idx] = slab.next;
+                slab.next = full_signal;
+            }
 
             return result[0..std.mem.alignAllocLen(padded_size, n, len_align)];
         }
@@ -54,7 +97,12 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
             const slab = Slab.fromMemPtr(buf.ptr);
             if (new_size == 0) {
-                slab.free(buf);
+                slab.free(buf.ptr);
+                if (slab.next == full_signal) {
+                    const idx = self.findSlabIndex(slab.size);
+                    slab.next = self.slabs[idx];
+                    self.slabs[idx] = slab;
+                }
                 return 0;
             }
 
