@@ -6,7 +6,7 @@ const zee_alloc = @import("main.zig");
 const test_config = zee_alloc.Config{};
 
 test "fuzz testing" {
-    var za = zee_alloc.ZeeAllocDefaults.init(std.heap.direct_allocator);
+    var za = zee_alloc.ZeeAllocDefaults.init(std.heap.page_allocator);
     const allocator = &za.allocator;
 
     const seed = 0x1234;
@@ -40,8 +40,8 @@ test "fuzz testing" {
         }) catch unreachable;
 
         var free_i: usize = 0;
-        while (free_i < free_queue.len) {
-            const item = &free_queue.toSlice()[free_i];
+        while (free_i < free_queue.items.len) {
+            const item = &free_queue.items[free_i];
             if (item.it_index <= it_index) {
                 // free time
                 allocator.free(item.slice);
@@ -51,7 +51,7 @@ test "fuzz testing" {
             }
             free_i += 1;
         }
-        std.debug.warn("index={} allocated: {Bi:2} freed: {Bi:2}\n", it_index, allocated_n, freed_n);
+        std.debug.warn("index={} allocated: {Bi:2} freed: {Bi:2}\n", .{ it_index, allocated_n, freed_n });
         //za.debugDump();
     }
 }
