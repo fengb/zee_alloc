@@ -26,9 +26,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         },
 
         const Slab = extern struct {
-            // TODO: fix Zig alignment bug
-            // next: ?*Slab align(conf.slab_size),
-            next: ?*Slab align(32768),
+            next: ?*Slab align(conf.slab_size),
             element_size: usize,
             pad: [conf.slab_size - 2 * @sizeOf(usize)]u8 align(8),
 
