@@ -62,6 +62,14 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 return ptr[0..count];
             }
 
+            fn totalFree(self: *Slab) usize {
+                var i: usize = 0;
+                for (self.freeBlocks()) |block| {
+                    i += @popCount(u64, block);
+                }
+                return i;
+            }
+
             fn elementCount(self: Slab) usize {
                 // TODO: convert into bit shifts
                 return conf.slab_size / self.element_size;
@@ -323,21 +331,19 @@ test "Slab.freeBlocks" {
 test "Slab.alloc + free" {
     var slab = ZeeAllocDefaults.Slab.init(16384);
 
-    const blocks = slab.freeBlocks();
-
-    std.testing.expectEqual(@as(usize, 3), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 3), slab.totalFree());
 
     const data0 = try slab.alloc();
-    std.testing.expectEqual(@as(usize, 2), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 2), slab.totalFree());
     std.testing.expectEqual(@as(usize, 16384), data0.len);
 
     const data1 = try slab.alloc();
-    std.testing.expectEqual(@as(usize, 1), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 1), slab.totalFree());
     std.testing.expectEqual(@as(usize, 16384), data1.len);
     std.testing.expectEqual(@as(usize, 16384), @ptrToInt(data1.ptr) - @ptrToInt(data0.ptr));
 
     const data2 = try slab.alloc();
-    std.testing.expectEqual(@as(usize, 0), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 0), slab.totalFree());
     std.testing.expectEqual(@as(usize, 16384), data2.len);
     std.testing.expectEqual(@as(usize, 16384), @ptrToInt(data2.ptr) - @ptrToInt(data1.ptr));
 
@@ -345,11 +351,11 @@ test "Slab.alloc + free" {
 
     {
         slab.free(data2);
-        std.testing.expectEqual(@as(usize, 1), @popCount(u64, blocks[0]));
+        std.testing.expectEqual(@as(usize, 1), slab.totalFree());
         slab.free(data1);
-        std.testing.expectEqual(@as(usize, 2), @popCount(u64, blocks[0]));
+        std.testing.expectEqual(@as(usize, 2), slab.totalFree());
         slab.free(data0);
-        std.testing.expectEqual(@as(usize, 3), @popCount(u64, blocks[0]));
+        std.testing.expectEqual(@as(usize, 3), slab.totalFree());
     }
 }
 
