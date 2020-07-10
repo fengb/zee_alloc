@@ -70,15 +70,18 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 return i;
             }
 
+            const UsizeShift = std.meta.Int(false, std.math.Log2Int(usize).bit_count - 1);
+            fn elementSizeShift(self: Slab) UsizeShift {
+                return @truncate(UsizeShift, @ctz(usize, self.element_size));
+            }
+
             fn elementCount(self: Slab) usize {
-                // TODO: convert into bit shifts
-                return conf.slab_size / self.element_size;
+                return conf.slab_size >> self.elementSizeShift();
             }
 
             fn dataOffset(self: Slab) usize {
                 const BITS_PER_BYTE = 8;
-                // TODO: convert into bit shifts
-                return 1 + conf.slab_size / BITS_PER_BYTE / self.element_size / self.element_size;
+                return 1 + ((conf.slab_size / BITS_PER_BYTE) >> self.elementSizeShift() >> self.elementSizeShift());
             }
 
             fn elementAt(self: *Slab, idx: usize) []u8 {
@@ -86,16 +89,15 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 std.debug.assert(idx < self.elementCount());
 
                 const bytes = std.mem.asBytes(self);
-                // TODO: convert into bit shifts
-                return bytes[self.element_size * idx ..][0..self.element_size];
+                return bytes[idx << self.elementSizeShift() ..][0..self.element_size];
             }
 
             fn elementIdx(self: *Slab, element: []u8) usize {
                 std.debug.assert(element.len == self.element_size);
                 const diff = @ptrToInt(element.ptr) - @ptrToInt(self);
-                // TODO: convert into bit shifts
                 std.debug.assert(diff % self.element_size == 0);
-                return diff / self.element_size;
+
+                return diff >> self.elementSizeShift();
             }
 
             fn alloc(self: *Slab) ![]u8 {
