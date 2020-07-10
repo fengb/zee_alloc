@@ -26,9 +26,11 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         },
 
         const Slab = extern struct {
+            const header_size = 2 * @sizeOf(usize);
+
             next: ?*Slab align(conf.slab_size),
             element_size: usize,
-            pad: [conf.slab_size - 2 * @sizeOf(usize)]u8 align(8),
+            pad: [conf.slab_size - header_size]u8 align(8),
 
             fn init(element_size: usize) Slab {
                 var result = Slab{
@@ -81,19 +83,22 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
 
             fn elementIdx(self: *Slab, element: []u8) usize {
+                std.debug.assert(element.len == self.element_size);
+                const diff = @ptrToInt(element.ptr) - @ptrToInt(self);
                 // TODO: convert into bit shifts
-                return (@ptrToInt(element.ptr) - @ptrToInt(self)) / self.element_size;
+                std.debug.assert(diff % self.element_size == 0);
+                return diff / self.element_size;
             }
 
-            fn alloc(self: *Slab) ![]u64 {
+            fn alloc(self: *Slab) ![]u8 {
                 for (self.freeBlocks()) |*block, i| {
                     if (block.* != 0) {
-                        const bit = @ctz(block.*);
+                        const bit = @ctz(u64, block.*);
 
                         const index = 64 * i + bit;
 
-                        const mask = @as(u64, 1) << bit;
-                        chunk.* &= ~mask;
+                        const mask = @as(u64, 1) << @intCast(u6, bit);
+                        block.* &= ~mask;
 
                         return self.elementAt(index + self.dataOffset());
                     }
@@ -103,11 +108,10 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
 
             fn free(self: *Slab, element: []u8) void {
-                std.debug.assert(element.len == self.element_size);
                 const index = self.elementIdx(element) - self.dataOffset();
 
                 const block = &self.freeBlocks()[index / 64];
-                const mask = @as(u64, 1) << (index % 64);
+                const mask = @as(u64, 1) << @truncate(u6, index);
                 std.debug.assert(mask & block.* == 0);
                 block.* |= mask;
             }
@@ -132,7 +136,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             } else if (memsize <= conf.slab_size / 4) {
                 return ceilPowerOfTwo(usize, memsize);
             } else {
-                return std.mem.alignForward(memsize, conf.slab_size);
+                const frame_size = std.mem.alignForward(memsize + Slab.header_size, conf.slab_size);
+                return frame_size - Slab.header_size;
             }
         }
 
@@ -315,12 +320,50 @@ test "Slab.freeBlocks" {
     }
 }
 
-test "padToSize" {
-    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSize(1));
-    std.testing.expectEqual(@as(usize, 16), ZeeAllocDefaults.padToSize(9));
+test "Slab.alloc + free" {
+    var slab = ZeeAllocDefaults.Slab.init(16384);
 
+    const blocks = slab.freeBlocks();
+
+    std.testing.expectEqual(@as(usize, 3), @popCount(u64, blocks[0]));
+
+    const data0 = try slab.alloc();
+    std.testing.expectEqual(@as(usize, 2), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 16384), data0.len);
+
+    const data1 = try slab.alloc();
+    std.testing.expectEqual(@as(usize, 1), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 16384), data1.len);
+    std.testing.expectEqual(@as(usize, 16384), @ptrToInt(data1.ptr) - @ptrToInt(data0.ptr));
+
+    const data2 = try slab.alloc();
+    std.testing.expectEqual(@as(usize, 0), @popCount(u64, blocks[0]));
+    std.testing.expectEqual(@as(usize, 16384), data2.len);
+    std.testing.expectEqual(@as(usize, 16384), @ptrToInt(data2.ptr) - @ptrToInt(data1.ptr));
+
+    std.testing.expectError(error.OutOfMemory, slab.alloc());
+
+    {
+        slab.free(data2);
+        std.testing.expectEqual(@as(usize, 1), @popCount(u64, blocks[0]));
+        slab.free(data1);
+        std.testing.expectEqual(@as(usize, 2), @popCount(u64, blocks[0]));
+        slab.free(data0);
+        std.testing.expectEqual(@as(usize, 3), @popCount(u64, blocks[0]));
+    }
+}
+
+test "padToSize" {
+    const page_size = 65536;
+    const header_size = 2 * @sizeOf(usize);
+
+    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSize(1));
+    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSize(4));
+    std.testing.expectEqual(@as(usize, 8), ZeeAllocDefaults.padToSize(8));
+    std.testing.expectEqual(@as(usize, 16), ZeeAllocDefaults.padToSize(9));
     std.testing.expectEqual(@as(usize, 16384), ZeeAllocDefaults.padToSize(16384));
-    std.testing.expectEqual(@as(usize, 65536), ZeeAllocDefaults.padToSize(16385));
-    std.testing.expectEqual(@as(usize, 65536), ZeeAllocDefaults.padToSize(65536));
-    std.testing.expectEqual(@as(usize, 2 * 65536), ZeeAllocDefaults.padToSize(65537));
+
+    std.testing.expectEqual(@as(usize, page_size - header_size), ZeeAllocDefaults.padToSize(16385));
+    std.testing.expectEqual(@as(usize, page_size - header_size), ZeeAllocDefaults.padToSize(page_size - header_size));
+    std.testing.expectEqual(@as(usize, 2 * page_size - header_size), ZeeAllocDefaults.padToSize(page_size));
 }
