@@ -9,15 +9,24 @@ pub const Config = struct {
 
     /// **Must** be a power of two.
     min_element_size: usize = 4,
+
+    fn maxElementSize(conf: Config) usize {
+        // Scientifically derived value
+        return conf.slab_size / 4;
+    }
 };
 
 pub const ZeeAllocDefaults = ZeeAlloc(Config{});
 
 pub fn ZeeAlloc(comptime conf: Config) type {
+    const min_shift_size = @ctz(usize, conf.min_element_size);
+    const max_shift_size = @ctz(usize, conf.maxElementSize());
+    const total_slabs = max_shift_size - min_shift_size + 1;
+
     return struct {
         const Self = @This();
 
-        slabs: [13]?*Slab, // slab[0] = 4 bytes, slab[1] = 8 bytes, etc.
+        slabs: [total_slabs]?*Slab = [_]?*Slab{null} ** total_slabs,
         backing_allocator: *std.mem.Allocator,
 
         allocator: Allocator = Allocator{
@@ -93,7 +102,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
 
             fn elementIdx(self: *Slab, element: []u8) usize {
-                std.debug.assert(element.len == self.element_size);
+                std.debug.assert(element.len <= self.element_size);
                 const diff = @ptrToInt(element.ptr) - @ptrToInt(self);
                 std.debug.assert(diff % self.element_size == 0);
 
@@ -131,46 +140,64 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             }
         };
 
-        const full_signal = @intToPtr(*Slab, std.math.maxInt(usize));
+        const full_signal = @intToPtr(*align(1) Slab, 1);
 
         pub fn init(allocator: *std.mem.Allocator) Self {
-            return .{
-                .slabs = [_]?*Slab{null} ** 13,
-                .backing_allocator = allocator,
-            };
+            return .{ .backing_allocator = allocator };
         }
 
-        fn padToSize(memsize: usize) usize {
+        fn padToSlabSize(memsize: usize) usize {
             if (memsize <= conf.min_element_size) {
                 return conf.min_element_size;
             } else if (memsize <= conf.slab_size / 4) {
                 return ceilPowerOfTwo(usize, memsize);
             } else {
-                const frame_size = std.mem.alignForward(memsize + Slab.header_size, conf.slab_size);
-                return frame_size - Slab.header_size;
+                unreachable;
+                // const frame_size = std.mem.alignForward(memsize + Slab.header_size, conf.slab_size);
+                // return frame_size - Slab.header_size;
             }
+        }
+
+        fn unsafeLog2(comptime T: type, val: T) T {
+            std.debug.assert(ceilPowerOfTwo(T, val) == val);
+            return @ctz(T, val);
+        }
+
+        fn findSlabIndex(padded_size: usize) usize {
+            return unsafeLog2(usize, padded_size) - min_shift_size;
         }
 
         fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29) Allocator.Error![]u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
-            const padded_size = self.padToSize(n);
 
-            // TODO: handle jumbo
-            const idx = self.findSlabIndex(padded_size);
-            const slab = self.slabs[idx] orelse blk: {
-                const new_slab = self.backing_allocator.create(Slab);
-                new_slab.next = null;
-                new_slab.size = padded_size;
-                self.slabs[idx] = new_slab;
-                break :blk new_slab;
-            };
-            const result = slab.alloc() catch unreachable;
-            if (slab.isFull()) {
-                self.slabs[idx] = slab.next;
-                slab.next = full_signal;
+            const is_jumbo = n > conf.slab_size / 4;
+            if (is_jumbo) {
+                // TODO: handle jumbo
+                return error.OutOfMemory;
+            } else {
+                const padded_size = padToSlabSize(n);
+                const idx = findSlabIndex(padded_size);
+                const slab = self.slabs[idx] orelse blk: {
+                    const new_slab = try self.backing_allocator.create(Slab);
+                    new_slab.next = null;
+                    new_slab.element_size = padded_size;
+                    self.slabs[idx] = new_slab;
+                    break :blk new_slab;
+                };
+
+                const result = slab.alloc() catch unreachable;
+                if (slab.elementCount() == 0) {
+                    self.slabs[idx] = slab.next;
+                    // Salt the earth
+                    std.mem.copy(
+                        u8,
+                        std.mem.asBytes(&slab.next),
+                        std.mem.asBytes(&full_signal),
+                    );
+                }
+
+                return result[0..std.mem.alignAllocLen(padded_size, n, len_align)];
             }
-
-            return result[0..std.mem.alignAllocLen(padded_size, n, len_align)];
         }
 
         fn resize(allocator: *Allocator, buf: []u8, new_size: usize, len_align: u29) Allocator.Error!usize {
@@ -178,21 +205,21 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
             const slab = Slab.fromMemPtr(buf.ptr);
             if (new_size == 0) {
-                slab.free(buf.ptr);
+                slab.free(buf);
                 if (slab.next == full_signal) {
-                    const idx = self.findSlabIndex(slab.size);
+                    const idx = findSlabIndex(slab.element_size);
                     slab.next = self.slabs[idx];
                     self.slabs[idx] = slab;
                 }
                 return 0;
             }
 
-            const padded_new_size = self.padToSize(new_size);
-            if (padded_new_size > slab.size) {
+            const padded_new_size = padToSlabSize(new_size);
+            if (padded_new_size > slab.element_size) {
                 return error.OutOfMemory;
             }
 
-            return result[0..std.mem.alignAllocLen(padded_new_size, n, len_align)];
+            return std.mem.alignAllocLen(padded_new_size, new_size, len_align);
         }
     };
 }
@@ -361,17 +388,31 @@ test "Slab.alloc + free" {
     }
 }
 
-test "padToSize" {
+test "padToSlabSize" {
     const page_size = 65536;
     const header_size = 2 * @sizeOf(usize);
 
-    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSize(1));
-    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSize(4));
-    std.testing.expectEqual(@as(usize, 8), ZeeAllocDefaults.padToSize(8));
-    std.testing.expectEqual(@as(usize, 16), ZeeAllocDefaults.padToSize(9));
-    std.testing.expectEqual(@as(usize, 16384), ZeeAllocDefaults.padToSize(16384));
+    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSlabSize(1));
+    std.testing.expectEqual(@as(usize, 4), ZeeAllocDefaults.padToSlabSize(4));
+    std.testing.expectEqual(@as(usize, 8), ZeeAllocDefaults.padToSlabSize(8));
+    std.testing.expectEqual(@as(usize, 16), ZeeAllocDefaults.padToSlabSize(9));
+    std.testing.expectEqual(@as(usize, 16384), ZeeAllocDefaults.padToSlabSize(16384));
+}
 
-    std.testing.expectEqual(@as(usize, page_size - header_size), ZeeAllocDefaults.padToSize(16385));
-    std.testing.expectEqual(@as(usize, page_size - header_size), ZeeAllocDefaults.padToSize(page_size - header_size));
-    std.testing.expectEqual(@as(usize, 2 * page_size - header_size), ZeeAllocDefaults.padToSize(page_size));
+test "alloc slab list" {
+    var zee_alloc = ZeeAllocDefaults.init(std.heap.page_allocator);
+
+    for (zee_alloc.slabs) |root| {
+        std.testing.expect(root == null);
+    }
+
+    std.testing.expect(zee_alloc.slabs[0] == null);
+    var mem = try zee_alloc.allocator.alloc(u8, 4);
+    //defer zee_alloc.allocator.free(mem);
+    std.testing.expect(zee_alloc.slabs[0] != null);
+
+    std.testing.expect(zee_alloc.slabs[12] == null);
+    mem = try zee_alloc.allocator.alloc(u8, 16384);
+    //defer zee_alloc.allocator.free(mem);
+    std.testing.expect(zee_alloc.slabs[12] != null);
 }
