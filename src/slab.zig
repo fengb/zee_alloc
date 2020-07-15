@@ -146,6 +146,17 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             return .{ .backing_allocator = allocator };
         }
 
+        pub fn deinit(self: *Self) void {
+            for (self.slabs) |root| {
+                var iter = root;
+                while (iter) |node| {
+                    iter = node.next;
+                    self.backing_allocator.destroy(node);
+                }
+            }
+            self.* = undefined;
+        }
+
         fn padToSlabSize(memsize: usize) usize {
             if (memsize <= conf.min_element_size) {
                 return conf.min_element_size;
@@ -399,7 +410,8 @@ test "padToSlabSize" {
 }
 
 test "alloc slab list" {
-    var zee_alloc = ZeeAllocDefaults.init(std.heap.page_allocator);
+    var zee_alloc = ZeeAllocDefaults.init(std.testing.allocator);
+    defer zee_alloc.deinit();
 
     for (zee_alloc.slabs) |root| {
         std.testing.expect(root == null);
