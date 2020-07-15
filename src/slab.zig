@@ -179,14 +179,13 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 const idx = findSlabIndex(padded_size);
                 const slab = self.slabs[idx] orelse blk: {
                     const new_slab = try self.backing_allocator.create(Slab);
-                    new_slab.next = null;
-                    new_slab.element_size = padded_size;
+                    new_slab.* = Slab.init(padded_size);
                     self.slabs[idx] = new_slab;
                     break :blk new_slab;
                 };
 
                 const result = slab.alloc() catch unreachable;
-                if (slab.elementCount() == 0) {
+                if (slab.totalFree() == 0) {
                     self.slabs[idx] = slab.next;
                     // Salt the earth
                     std.mem.copy(
@@ -407,12 +406,16 @@ test "alloc slab list" {
     }
 
     std.testing.expect(zee_alloc.slabs[0] == null);
-    var mem = try zee_alloc.allocator.alloc(u8, 4);
-    //defer zee_alloc.allocator.free(mem);
+    const small = try zee_alloc.allocator.alloc(u8, 4);
     std.testing.expect(zee_alloc.slabs[0] != null);
+    const smalls_before_free = zee_alloc.slabs[0].?.totalFree();
+    zee_alloc.allocator.free(small);
+    std.testing.expectEqual(smalls_before_free + 1, zee_alloc.slabs[0].?.totalFree());
 
     std.testing.expect(zee_alloc.slabs[12] == null);
-    mem = try zee_alloc.allocator.alloc(u8, 16384);
-    //defer zee_alloc.allocator.free(mem);
+    const large = try zee_alloc.allocator.alloc(u8, 16384);
     std.testing.expect(zee_alloc.slabs[12] != null);
+    const larges_before_free = zee_alloc.slabs[12].?.totalFree();
+    zee_alloc.allocator.free(large);
+    std.testing.expectEqual(larges_before_free + 1, zee_alloc.slabs[12].?.totalFree());
 }
