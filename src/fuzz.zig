@@ -1,7 +1,7 @@
 // https://github.com/andrewrk/zig-general-purpose-allocator/blob/520b396/test/fuzz.zig
 
 const std = @import("std");
-const zee_alloc = @import("main.zig");
+const zee_alloc = @import("slab.zig");
 
 const test_config = zee_alloc.Config{};
 

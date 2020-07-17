@@ -26,6 +26,10 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         const max_shift_size = unsafeLog2(usize, conf.maxElementSize());
         const total_slabs = max_shift_size - min_shift_size + 1;
 
+        /// The definitive™ way of using `ZeeAlloc`
+        pub const wasm_allocator = &_wasm.allocator;
+        var _wasm = init(&wasm_page_allocator);
+
         jumbo: ?*Slab = null,
         slabs: [total_slabs]?*Slab = [_]?*Slab{null} ** total_slabs,
         backing_allocator: *std.mem.Allocator,
@@ -204,7 +208,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                     return error.OutOfMemory;
                 }
 
-                var prev = @ptrCast(*align(8) Slab, self);
+                var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
                 while (prev.next) |curr| : (prev = curr) {
                     if (curr.element_size == padded_size) {
                         prev.next = curr.next;
@@ -273,6 +277,101 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         }
     };
 }
+
+var wasm_page_allocator = init: {
+    if (std.builtin.arch != .wasm32) {
+        @compileError("wasm allocator is only available for wasm32 arch");
+    }
+
+    // std.heap.WasmPageAllocator is designed for reusing pages
+    // We never free, so this lets us stay super small
+    const WasmPageAllocator = struct {
+        fn alloc(allocator: *Allocator, n: usize, alignment: u29, len_align: u29) Allocator.Error![]u8 {
+            const is_debug = std.builtin.mode == .Debug;
+            @setRuntimeSafety(is_debug);
+            std.debug.assert(n % std.mem.page_size == 0); // Should only be allocating page size chunks
+            std.debug.assert(alignment % std.mem.page_size == 0); // Should only align to page_size increments
+
+            const requested_page_count = @intCast(u32, n / std.mem.page_size);
+            const prev_page_count = @wasmMemoryGrow(0, requested_page_count);
+            if (prev_page_count < 0) {
+                return error.OutOfMemory;
+            }
+
+            const start_ptr = @intToPtr([*]u8, @intCast(usize, prev_page_count) * std.mem.page_size);
+            return start_ptr[0..n];
+        }
+    };
+
+    break :init Allocator{
+        .allocFn = WasmPageAllocator.alloc,
+        .resizeFn = undefined, // Shouldn't be shrinking / freeing
+    };
+};
+
+pub const ExportC = struct {
+    allocator: *std.mem.Allocator,
+    malloc: bool = true,
+    free: bool = true,
+    calloc: bool = false,
+    realloc: bool = false,
+
+    pub fn run(comptime conf: ExportC) void {
+        const Funcs = struct {
+            fn malloc(size: usize) callconv(.C) ?*c_void {
+                if (size == 0) {
+                    return null;
+                }
+                //const result = conf.allocator.alloc(u8, size) catch return null;
+                const result = conf.allocator.allocFn(conf.allocator, size, 1, 1) catch return null;
+                return result.ptr;
+            }
+            fn calloc(num_elements: usize, element_size: usize) callconv(.C) ?*c_void {
+                const size = num_elements *% element_size;
+                const c_ptr = @call(.{ .modifier = .never_inline }, malloc, .{size});
+                if (c_ptr) |ptr| {
+                    const p = @ptrCast([*]u8, ptr);
+                    @memset(p, 0, size);
+                }
+                return c_ptr;
+            }
+            fn realloc(c_ptr: ?*c_void, new_size: usize) callconv(.C) ?*c_void {
+                if (new_size == 0) {
+                    @call(.{ .modifier = .never_inline }, free, .{c_ptr});
+                    return null;
+                } else if (c_ptr) |ptr| {
+                    // Use a synthetic slice
+                    const p = @ptrCast([*]u8, ptr);
+                    const result = conf.allocator.realloc(p[0..1], new_size) catch return null;
+                    return @ptrCast(*c_void, result.ptr);
+                } else {
+                    return @call(.{ .modifier = .never_inline }, malloc, .{new_size});
+                }
+            }
+            fn free(c_ptr: ?*c_void) callconv(.C) void {
+                if (c_ptr) |ptr| {
+                    // Use a synthetic slice. zee_alloc will free via corresponding metadata.
+                    const p = @ptrCast([*]u8, ptr);
+                    //conf.allocator.free(p[0..1]);
+                    _ = conf.allocator.resizeFn(conf.allocator, p[0..1], 0, 0) catch unreachable;
+                }
+            }
+        };
+
+        if (conf.malloc) {
+            @export(Funcs.malloc, .{ .name = "malloc" });
+        }
+        if (conf.calloc) {
+            @export(Funcs.calloc, .{ .name = "calloc" });
+        }
+        if (conf.realloc) {
+            @export(Funcs.realloc, .{ .name = "realloc" });
+        }
+        if (conf.free) {
+            @export(Funcs.free, .{ .name = "free" });
+        }
+    }
+};
 
 fn divCeil(comptime T: type, numerator: T, denominator: T) T {
     return (numerator + denominator - 1) / denominator;
