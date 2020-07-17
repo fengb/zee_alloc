@@ -37,10 +37,11 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
         const Slab = extern struct {
             const header_size = 2 * @sizeOf(usize);
+            const payload_alignment = header_size;
 
             next: ?*Slab align(conf.slab_size),
             element_size: usize,
-            pad: [conf.slab_size - header_size]u8 align(header_size),
+            pad: [conf.slab_size - header_size]u8 align(payload_alignment),
 
             fn init(element_size: usize) Slab {
                 var result = Slab{
@@ -199,6 +200,10 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const padded_size = padToSize(n);
             const is_jumbo = n > conf.slab_size / 4;
             if (is_jumbo) {
+                if (ptr_align > Slab.payload_alignment) {
+                    return error.OutOfMemory;
+                }
+
                 var prev = @ptrCast(*align(8) Slab, self);
                 while (prev.next) |curr| : (prev = curr) {
                     if (curr.element_size == padded_size) {
@@ -216,6 +221,10 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 const ptr = @ptrCast([*]u8, &synth_slab.pad);
                 return ptr[0..std.mem.alignAllocLen(padded_size, n, len_align)];
             } else {
+                if (ptr_align > padded_size) {
+                    return error.OutOfMemory;
+                }
+
                 const idx = findSlabIndex(padded_size);
                 const slab = self.slabs[idx] orelse blk: {
                     const new_slab = try self.backing_allocator.create(Slab);
@@ -479,4 +488,12 @@ test "alloc jumbo" {
     std.testing.expectEqual(first.ptr, reuse.ptr);
     zee_alloc.allocator.free(first);
     std.testing.expect(zee_alloc.jumbo != null);
+}
+
+test "functional tests" {
+    var zee_alloc = ZeeAllocDefaults.init(std.testing.allocator);
+    defer zee_alloc.deinit();
+
+    try std.heap.testAllocator(&zee_alloc.allocator);
+    try std.heap.testAllocatorAligned(&zee_alloc.allocator, 16);
 }
