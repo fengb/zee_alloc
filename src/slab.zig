@@ -179,13 +179,15 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             self.* = undefined;
         }
 
+        fn isJumbo(value: usize) bool {
+            return value > conf.slab_size / 4;
+        }
+
         fn padToSize(memsize: usize) usize {
-            if (memsize <= conf.min_element_size) {
-                return conf.min_element_size;
-            } else if (memsize <= conf.slab_size / 4) {
-                return ceilPowerOfTwo(usize, memsize);
-            } else {
+            if (isJumbo(memsize)) {
                 return std.mem.alignForward(memsize + Slab.header_size, conf.slab_size);
+            } else {
+                return std.math.max(conf.min_element_size, ceilPowerOfTwo(usize, memsize));
             }
         }
 
@@ -198,54 +200,58 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             return unsafeLog2(usize, padded_size) - min_shift_size;
         }
 
+        fn allocJumbo(self: *Self, padded_size: usize, ptr_align: usize) ![*]u8 {
+            if (ptr_align > Slab.payload_alignment) {
+                return error.OutOfMemory;
+            }
+
+            var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
+            while (prev.next) |curr| : (prev = curr) {
+                if (curr.element_size == padded_size) {
+                    prev.next = curr.next;
+                    curr.markDetached();
+                    return @ptrCast([*]u8, &curr.pad);
+                }
+            }
+
+            const new_frame = try self.backing_allocator.allocAdvanced(u8, conf.slab_size, padded_size, .exact);
+            const synth_slab = @ptrCast(*Slab, new_frame.ptr);
+            synth_slab.element_size = padded_size;
+            synth_slab.markDetached();
+            return @ptrCast([*]u8, &synth_slab.pad);
+        }
+
+        fn allocSlab(self: *Self, element_size: usize, ptr_align: usize) ![*]u8 {
+            if (ptr_align > element_size) {
+                return error.OutOfMemory;
+            }
+
+            const idx = findSlabIndex(element_size);
+            const slab = self.slabs[idx] orelse blk: {
+                const new_slab = try self.backing_allocator.create(Slab);
+                new_slab.* = Slab.init(element_size);
+                self.slabs[idx] = new_slab;
+                break :blk new_slab;
+            };
+
+            const result = slab.alloc() catch unreachable;
+            if (slab.totalFree() == 0) {
+                self.slabs[idx] = slab.next;
+                slab.markDetached();
+            }
+
+            return result.ptr;
+        }
+
         fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29) Allocator.Error![]u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
 
             const padded_size = padToSize(n);
-            const ptr: [*]u8 = blk: {
-                const is_jumbo = n > conf.slab_size / 4;
-                if (is_jumbo) {
-                    if (ptr_align > Slab.payload_alignment) {
-                        return error.OutOfMemory;
-                    }
+            const ptr: [*]u8 = if (isJumbo(n))
+                try self.allocJumbo(padded_size, ptr_align)
+            else
+                try self.allocSlab(padded_size, ptr_align);
 
-                    var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
-                    while (prev.next) |curr| : (prev = curr) {
-                        if (curr.element_size == padded_size) {
-                            prev.next = curr.next;
-                            curr.markDetached();
-                            // TODO: why is this alignCast necessary?
-                            break :blk @alignCast(1, @ptrCast([*]u8, &curr.pad));
-                        }
-                    }
-
-                    const new_frame = try self.backing_allocator.allocAdvanced(u8, conf.slab_size, padded_size, .exact);
-                    const synth_slab = @ptrCast(*Slab, new_frame.ptr);
-                    synth_slab.element_size = padded_size;
-                    synth_slab.markDetached();
-                    break :blk @ptrCast([*]u8, &synth_slab.pad);
-                } else {
-                    if (ptr_align > padded_size) {
-                        return error.OutOfMemory;
-                    }
-
-                    const idx = findSlabIndex(padded_size);
-                    const slab = self.slabs[idx] orelse blk: {
-                        const new_slab = try self.backing_allocator.create(Slab);
-                        new_slab.* = Slab.init(padded_size);
-                        self.slabs[idx] = new_slab;
-                        break :blk new_slab;
-                    };
-
-                    const result = slab.alloc() catch unreachable;
-                    if (slab.totalFree() == 0) {
-                        self.slabs[idx] = slab.next;
-                        slab.markDetached();
-                    }
-
-                    break :blk result.ptr;
-                }
-            };
             return ptr[0..std.mem.alignAllocLen(padded_size, n, len_align)];
         }
 
@@ -254,8 +260,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
             const slab = Slab.fromMemPtr(buf.ptr);
             if (new_size == 0) {
-                const is_jumbo = slab.element_size > conf.slab_size / 4;
-                if (is_jumbo) {
+                if (isJumbo(slab.element_size)) {
                     std.debug.assert(slab.isDetached());
                     slab.next = self.jumbo;
                     self.jumbo = slab;
@@ -381,7 +386,7 @@ fn divCeil(comptime T: type, numerator: T, denominator: T) T {
 
 // https://github.com/ziglang/zig/issues/2426
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
-    if (value <= 2) return value;
+    std.debug.assert(value != 0);
     const Shift = comptime std.math.Log2Int(T);
     return @as(T, 1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
 }
