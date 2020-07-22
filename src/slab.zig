@@ -202,49 +202,51 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const self = @fieldParentPtr(Self, "allocator", allocator);
 
             const padded_size = padToSize(n);
-            const is_jumbo = n > conf.slab_size / 4;
-            if (is_jumbo) {
-                if (ptr_align > Slab.payload_alignment) {
-                    return error.OutOfMemory;
-                }
-
-                var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
-                while (prev.next) |curr| : (prev = curr) {
-                    if (curr.element_size == padded_size) {
-                        prev.next = curr.next;
-                        curr.markDetached();
-                        const ptr = @ptrCast([*]u8, &curr.pad);
-                        return ptr[0..std.mem.alignAllocLen(padded_size, n, len_align)];
+            const ptr: [*]u8 = blk: {
+                const is_jumbo = n > conf.slab_size / 4;
+                if (is_jumbo) {
+                    if (ptr_align > Slab.payload_alignment) {
+                        return error.OutOfMemory;
                     }
+
+                    var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
+                    while (prev.next) |curr| : (prev = curr) {
+                        if (curr.element_size == padded_size) {
+                            prev.next = curr.next;
+                            curr.markDetached();
+                            // TODO: why is this alignCast necessary?
+                            break :blk @alignCast(1, @ptrCast([*]u8, &curr.pad));
+                        }
+                    }
+
+                    const new_frame = try self.backing_allocator.allocAdvanced(u8, conf.slab_size, padded_size, .exact);
+                    const synth_slab = @ptrCast(*Slab, new_frame.ptr);
+                    synth_slab.element_size = padded_size;
+                    synth_slab.markDetached();
+                    break :blk @ptrCast([*]u8, &synth_slab.pad);
+                } else {
+                    if (ptr_align > padded_size) {
+                        return error.OutOfMemory;
+                    }
+
+                    const idx = findSlabIndex(padded_size);
+                    const slab = self.slabs[idx] orelse blk: {
+                        const new_slab = try self.backing_allocator.create(Slab);
+                        new_slab.* = Slab.init(padded_size);
+                        self.slabs[idx] = new_slab;
+                        break :blk new_slab;
+                    };
+
+                    const result = slab.alloc() catch unreachable;
+                    if (slab.totalFree() == 0) {
+                        self.slabs[idx] = slab.next;
+                        slab.markDetached();
+                    }
+
+                    break :blk result.ptr;
                 }
-
-                const new_frame = try self.backing_allocator.allocAdvanced(u8, conf.slab_size, padded_size, .exact);
-                const synth_slab = @ptrCast(*Slab, new_frame.ptr);
-                synth_slab.element_size = padded_size;
-                synth_slab.markDetached();
-                const ptr = @ptrCast([*]u8, &synth_slab.pad);
-                return ptr[0..std.mem.alignAllocLen(padded_size, n, len_align)];
-            } else {
-                if (ptr_align > padded_size) {
-                    return error.OutOfMemory;
-                }
-
-                const idx = findSlabIndex(padded_size);
-                const slab = self.slabs[idx] orelse blk: {
-                    const new_slab = try self.backing_allocator.create(Slab);
-                    new_slab.* = Slab.init(padded_size);
-                    self.slabs[idx] = new_slab;
-                    break :blk new_slab;
-                };
-
-                const result = slab.alloc() catch unreachable;
-                if (slab.totalFree() == 0) {
-                    self.slabs[idx] = slab.next;
-                    slab.markDetached();
-                }
-
-                return result[0..std.mem.alignAllocLen(padded_size, n, len_align)];
-            }
+            };
+            return ptr[0..std.mem.alignAllocLen(padded_size, n, len_align)];
         }
 
         fn resize(allocator: *Allocator, buf: []u8, new_size: usize, len_align: u29) Allocator.Error!usize {
