@@ -47,23 +47,18 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             element_size: usize,
             pad: [conf.slab_size - header_size]u8 align(payload_alignment),
 
-            fn init(element_size: usize) Slab {
-                var result = Slab{
-                    .next = null,
-                    .element_size = element_size,
-                    .pad = undefined,
-                };
+            fn init(self: *Slab, element_size: usize) void {
+                self.next = null;
+                self.element_size = element_size;
 
-                const blocks = result.freeBlocks();
-                for (blocks[0 .. blocks.len - 1]) |*block| {
+                const blocks = self.freeBlocks();
+                for (blocks) |*block| {
                     block.* = std.math.maxInt(u64);
                 }
 
-                const remaining_bits = @truncate(u6, (result.elementCount() - result.dataOffset()) % 64);
+                const remaining_bits = @truncate(u6, (self.elementCount() - self.dataOffset()) % 64);
                 // TODO: detect overflow
                 blocks[blocks.len - 1] = (@as(u64, 1) << remaining_bits) - 1;
-
-                return result;
             }
 
             fn fromMemPtr(ptr: [*]u8) *Slab {
@@ -74,11 +69,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const detached_signal = @intToPtr(*align(1) Slab, 0xaaaa);
             fn markDetached(self: *Slab) void {
                 // Salt the earth
-                std.mem.copy(
-                    u8,
-                    std.mem.asBytes(&self.next),
-                    std.mem.asBytes(&detached_signal),
-                );
+                const raw_next = @ptrCast(*usize, &self.next);
+                raw_next.* = @ptrToInt(detached_signal);
             }
 
             fn isDetached(self: Slab) bool {
@@ -131,9 +123,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
 
             fn alloc(self: *Slab) ![]u8 {
                 for (self.freeBlocks()) |*block, i| {
-                    if (block.* != 0) {
-                        const bit = @ctz(u64, block.*);
-
+                    const bit = @ctz(u64, block.*);
+                    if (bit != 64) {
                         const index = 64 * i + bit;
 
                         const mask = @as(u64, 1) << @intCast(u6, bit);
@@ -205,20 +196,22 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 return error.OutOfMemory;
             }
 
-            var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
-            while (prev.next) |curr| : (prev = curr) {
-                if (curr.element_size == padded_size) {
-                    prev.next = curr.next;
-                    curr.markDetached();
-                    return @ptrCast([*]u8, &curr.pad);
+            const slab: *Slab = blk: {
+                var prev = @ptrCast(*align(@alignOf(Self)) Slab, self);
+                while (prev.next) |curr| : (prev = curr) {
+                    if (curr.element_size == padded_size) {
+                        prev.next = curr.next;
+                        break :blk curr;
+                    }
                 }
-            }
 
-            const new_frame = try self.backing_allocator.allocAdvanced(u8, conf.slab_size, padded_size, .exact);
-            const synth_slab = @ptrCast(*Slab, new_frame.ptr);
-            synth_slab.element_size = padded_size;
-            synth_slab.markDetached();
-            return @ptrCast([*]u8, &synth_slab.pad);
+                const new_frame = try self.backing_allocator.allocAdvanced(u8, conf.slab_size, padded_size, .exact);
+                const synth_slab = @ptrCast(*Slab, new_frame.ptr);
+                synth_slab.element_size = padded_size;
+                break :blk synth_slab;
+            };
+            slab.markDetached();
+            return @ptrCast([*]u8, &slab.pad);
         }
 
         fn allocSlab(self: *Self, element_size: usize, ptr_align: usize) ![*]u8 {
@@ -229,7 +222,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const idx = findSlabIndex(element_size);
             const slab = self.slabs[idx] orelse blk: {
                 const new_slab = try self.backing_allocator.create(Slab);
-                new_slab.* = Slab.init(element_size);
+                new_slab.init(element_size);
                 self.slabs[idx] = new_slab;
                 break :blk new_slab;
             };
