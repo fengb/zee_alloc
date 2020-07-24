@@ -602,3 +602,61 @@ test "functional tests" {
     try std.heap.testAllocator(&zee_alloc.allocator);
     try std.heap.testAllocatorAligned(&zee_alloc.allocator, 16);
 }
+
+fn expectIllegalBehavior(context: anytype, comptime func: anytype) !void {
+    if (!@hasDecl(std.os.system, "fork") or !std.debug.runtime_safety) return;
+
+    const child_pid = try std.os.fork();
+    if (child_pid == 0) {
+        const null_fd = std.os.openZ("/dev/null", std.os.O_RDWR, 0) catch {
+            std.debug.print("Cannot open /dev/null\n", .{});
+            std.os.exit(0);
+        };
+        std.os.dup2(null_fd, std.io.getStdErr().handle) catch {
+            std.debug.print("Cannot close child process stderr\n", .{});
+            std.os.exit(0);
+        };
+
+        func(context); // this should crash
+        std.os.exit(0);
+    } else {
+        const status = std.os.waitpid(child_pid, 0);
+        // Maybe we should use a fixed error code instead of checking status != 0
+        if (status == 0) @panic("Expected illegal behavior but succeeded instead");
+    }
+}
+
+const AllocContext = struct {
+    allocator: *Allocator,
+    mem: []u8,
+
+    fn init(allocator: *Allocator, mem: []u8) AllocContext {
+        return .{ .allocator = allocator, .mem = mem };
+    }
+
+    fn free(self: AllocContext) void {
+        self.allocator.free(self.mem);
+    }
+};
+
+test "double free" {
+    var zee_alloc = ZeeAllocDefaults.init(std.testing.allocator);
+    defer zee_alloc.deinit();
+
+    const mem = try zee_alloc.allocator.alloc(u8, 16);
+    zee_alloc.allocator.free(mem);
+
+    const context = AllocContext.init(&zee_alloc.allocator, mem);
+    try expectIllegalBehavior(context, AllocContext.free);
+}
+
+test "freeing non-owned memory" {
+    var zee_alloc = ZeeAllocDefaults.init(std.testing.allocator);
+    defer zee_alloc.deinit();
+
+    const mem = try std.testing.allocator.alloc(u8, 16);
+    defer std.testing.allocator.free(mem);
+
+    const context = AllocContext.init(&zee_alloc.allocator, mem);
+    try expectIllegalBehavior(context, AllocContext.free);
+}
