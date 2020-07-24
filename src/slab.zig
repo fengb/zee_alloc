@@ -47,7 +47,13 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             element_size: usize,
             pad: [conf.slab_size - header_size]u8 align(payload_alignment),
 
-            fn init(self: *Slab, element_size: usize) void {
+            fn init(element_size: usize) Slab {
+                var result: Slab = undefined;
+                result.reset(element_size);
+                return result;
+            }
+
+            fn reset(self: *Slab, element_size: usize) void {
                 self.next = null;
                 self.element_size = element_size;
 
@@ -222,7 +228,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             const idx = findSlabIndex(element_size);
             const slab = self.slabs[idx] orelse blk: {
                 const new_slab = try self.backing_allocator.create(Slab);
-                new_slab.init(element_size);
+                new_slab.reset(element_size);
                 self.slabs[idx] = new_slab;
                 break :blk new_slab;
             };
