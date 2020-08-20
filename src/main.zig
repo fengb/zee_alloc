@@ -488,7 +488,7 @@ pub const ExportC = struct {
                     return null;
                 }
                 //const result = conf.allocator.alloc(u8, size) catch return null;
-                const result = conf.allocator.allocFn(conf.allocator, size, 1, 1) catch return null;
+                const result = conf.allocator.allocFn(conf.allocator, size, 1, 1, 0) catch return null;
                 return result.ptr;
             }
             fn calloc(num_elements: usize, element_size: usize) callconv(.C) ?*c_void {
@@ -518,7 +518,7 @@ pub const ExportC = struct {
                     // Use a synthetic slice. zee_alloc will free via corresponding metadata.
                     const p = @ptrCast([*]u8, ptr);
                     //conf.allocator.free(p[0..1]);
-                    _ = conf.allocator.resizeFn(conf.allocator, p[0..1], 0, 0, 0, 0, 0) catch unreachable;
+                    _ = conf.allocator.resizeFn(conf.allocator, p[0..1], 0, 0, 0, 0) catch unreachable;
                 }
             }
         };
