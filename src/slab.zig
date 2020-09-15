@@ -162,7 +162,8 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 var iter = self.jumbo;
                 while (iter) |node| {
                     iter = node.next;
-                    self.backing_allocator.destroy(node);
+                    const bytes = @ptrCast([*]u8, node);
+                    self.backing_allocator.free(bytes[0..node.element_size]);
                 }
             }
 
