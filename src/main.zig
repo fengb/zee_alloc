@@ -234,7 +234,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
         fn allocNode(self: *Self, memsize: usize) !*Frame {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             const alloc_size = unsafeAlignForward(memsize + meta_size);
-            const rawData = try self.backing_allocator.allocFn(self.backing_allocator, alloc_size, conf.page_size, 0);
+            const rawData = try self.backing_allocator.allocFn(self.backing_allocator, alloc_size, conf.page_size, 0, 0);
             return Frame.init(rawData);
         }
 
@@ -385,7 +385,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             // }
         }
 
-        fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29) Allocator.Error![]u8 {
+        fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29, ret_addr: usize) Allocator.Error![]u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             if (ptr_align > min_frame_size) {
                 return error.OutOfMemory;
@@ -397,7 +397,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             return node.payloadSlice(0, len);
         }
 
-        fn resize(allocator: *Allocator, buf: []u8, new_size: usize, len_align: u29) Allocator.Error!usize {
+        fn resize(allocator: *Allocator, buf: []u8, buf_align: u29, new_size: usize, len_align: u29, ret_addr: usize) Allocator.Error!usize {
             const self = @fieldParentPtr(Self, "allocator", allocator);
             @setRuntimeSafety(comptime conf.validation.useExternal());
             const node = Frame.restorePayload(buf.ptr) catch unreachable;
@@ -451,7 +451,7 @@ var wasm_page_allocator = init: {
     // std.heap.WasmPageAllocator is designed for reusing pages
     // We never free, so this lets us stay super small
     const WasmPageAllocator = struct {
-        fn alloc(allocator: *Allocator, n: usize, alignment: u29, len_align: u29) Allocator.Error![]u8 {
+        fn alloc(allocator: *Allocator, n: usize, alignment: u29, len_align: u29, ret_addr: usize) Allocator.Error![]u8 {
             const is_debug = builtin.mode == .Debug;
             @setRuntimeSafety(is_debug);
             assertIf(is_debug, n % std.mem.page_size == 0); // Should only be allocating page size chunks
@@ -488,7 +488,7 @@ pub const ExportC = struct {
                     return null;
                 }
                 //const result = conf.allocator.alloc(u8, size) catch return null;
-                const result = conf.allocator.allocFn(conf.allocator, size, 1, 1) catch return null;
+                const result = conf.allocator.allocFn(conf.allocator, size, 1, 1, 0) catch return null;
                 return result.ptr;
             }
             fn calloc(num_elements: usize, element_size: usize) callconv(.C) ?*c_void {
@@ -518,7 +518,7 @@ pub const ExportC = struct {
                     // Use a synthetic slice. zee_alloc will free via corresponding metadata.
                     const p = @ptrCast([*]u8, ptr);
                     //conf.allocator.free(p[0..1]);
-                    _ = conf.allocator.resizeFn(conf.allocator, p[0..1], 0, 0) catch unreachable;
+                    _ = conf.allocator.resizeFn(conf.allocator, p[0..1], 0, 0, 0, 0) catch unreachable;
                 }
             }
         };
