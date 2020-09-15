@@ -548,13 +548,15 @@ test "ZeeAlloc helpers" {
     var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
     const page_size = ZeeAllocDefaults.config.page_size;
 
-    @"freeListIndex": {
+    // freeListIndex
+    {
         testing.expectEqual(zee_alloc.freeListIndex(page_size), page_index);
         testing.expectEqual(zee_alloc.freeListIndex(page_size / 2), page_index + 1);
         testing.expectEqual(zee_alloc.freeListIndex(page_size / 4), page_index + 2);
     }
 
-    @"padToFrameSize": {
+    // padToFrameSize
+    {
         testing.expectEqual(zee_alloc.padToFrameSize(page_size - meta_size), page_size);
         testing.expectEqual(zee_alloc.padToFrameSize(page_size), 2 * page_size);
         testing.expectEqual(zee_alloc.padToFrameSize(page_size - meta_size + 1), 2 * page_size);
@@ -565,7 +567,8 @@ test "ZeeAlloc helpers" {
 test "ZeeAlloc internals" {
     var buf: [1000000]u8 = undefined;
 
-    @"node count makes sense": {
+    // node count makes sense
+    {
         var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
         var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
@@ -586,7 +589,8 @@ test "ZeeAlloc internals" {
         testing.expectEqual(zee_alloc.debugCount(jumbo_index), 1);
     }
 
-    @"BuddyStrategy = Coalesce": {
+    // BuddyStrategy = Coalesce
+    {
         var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
         var zee_alloc = ZeeAlloc(Config{ .buddy_strategy = .Coalesce }).init(&fixed_buffer_allocator.allocator);
 
@@ -596,7 +600,8 @@ test "ZeeAlloc internals" {
         testing.expectEqual(zee_alloc.debugCountAll(), 1);
     }
 
-    @"realloc reuses frame if possible": {
+    // realloc reuses frame if possible
+    {
         var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
         var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
@@ -610,7 +615,8 @@ test "ZeeAlloc internals" {
         }
     }
 
-    @"allocated_signal": {
+    // allocated_signal
+    {
         var fixed_buffer_allocator = std.heap.FixedBufferAllocator.init(buf[0..]);
         var zee_alloc = ZeeAllocDefaults.init(&fixed_buffer_allocator.allocator);
 
