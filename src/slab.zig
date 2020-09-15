@@ -97,7 +97,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
                 return i;
             }
 
-            const UsizeShift = std.meta.Int(false, std.math.Log2Int(usize).bit_count - 1);
+            const UsizeShift = std.meta.Int(false, @bitSizeOf(std.math.Log2Int(usize)) - 1);
             fn elementSizeShift(self: Slab) UsizeShift {
                 return @truncate(UsizeShift, @ctz(usize, self.element_size));
             }
@@ -242,7 +242,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             return result.ptr;
         }
 
-        fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29) Allocator.Error![]u8 {
+        fn alloc(allocator: *Allocator, n: usize, ptr_align: u29, len_align: u29, ret_addr: usize) Allocator.Error![]u8 {
             const self = @fieldParentPtr(Self, "allocator", allocator);
 
             const padded_size = padToSize(n);
@@ -254,7 +254,7 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             return ptr[0..std.mem.alignAllocLen(padded_size, n, len_align)];
         }
 
-        fn resize(allocator: *Allocator, buf: []u8, new_size: usize, len_align: u29) Allocator.Error!usize {
+        fn resize(allocator: *Allocator, buf: []u8, buf_align: u29, new_size: usize, len_align: u29, ret_addr: usize) Allocator.Error!usize {
             const self = @fieldParentPtr(Self, "allocator", allocator);
 
             const slab = Slab.fromMemPtr(buf.ptr);
@@ -292,7 +292,7 @@ var wasm_page_allocator = init: {
     // std.heap.WasmPageAllocator is designed for reusing pages
     // We never free, so this lets us stay super small
     const WasmPageAllocator = struct {
-        fn alloc(allocator: *Allocator, n: usize, alignment: u29, len_align: u29) Allocator.Error![]u8 {
+        fn alloc(allocator: *Allocator, n: usize, alignment: u29, len_align: u29, ret_addr: usize) Allocator.Error![]u8 {
             const is_debug = std.builtin.mode == .Debug;
             @setRuntimeSafety(is_debug);
             std.debug.assert(n % std.mem.page_size == 0); // Should only be allocating page size chunks
@@ -387,7 +387,7 @@ fn divCeil(comptime T: type, numerator: T, denominator: T) T {
 fn ceilPowerOfTwo(comptime T: type, value: T) T {
     std.debug.assert(value != 0);
     const Shift = comptime std.math.Log2Int(T);
-    return @as(T, 1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
+    return @as(T, 1) << @intCast(Shift, @bitSizeOf(T) - @clz(T, value - 1));
 }
 
 test "divCeil" {
