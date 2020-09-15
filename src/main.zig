@@ -335,13 +335,13 @@ pub fn ZeeAlloc(comptime conf: Config) type {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             if (value <= 2) return value;
             const Shift = comptime std.math.Log2Int(T);
-            return @as(T, 1) << @intCast(Shift, T.bit_count - @clz(T, value - 1));
+            return @as(T, 1) << @intCast(Shift, @bitSizeOf(T) - @clz(T, value - 1));
         }
 
         fn unsafeLog2Int(comptime T: type, x: T) std.math.Log2Int(T) {
             @setRuntimeSafety(comptime conf.validation.useInternal());
             conf.validation.assertInternal(x != 0);
-            return @intCast(std.math.Log2Int(T), T.bit_count - 1 - @clz(T, x));
+            return @intCast(std.math.Log2Int(T), @bitSizeOf(T) - 1 - @clz(T, x));
         }
 
         fn unsafeAlignForward(size: usize) usize {
