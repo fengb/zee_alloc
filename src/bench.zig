@@ -71,7 +71,7 @@ pub fn benchmark(comptime B: type) !void {
 }
 
 /// Pretend to use the value so the optimizer cant optimize it out.
-fn doNotOptimize(val: var) void {
+fn doNotOptimize(val: anytype) void {
     const T = @TypeOf(val);
     var store: T = undefined;
     @ptrCast(*volatile T, &store).* = val;
