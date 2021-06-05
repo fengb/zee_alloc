@@ -444,7 +444,7 @@ fn assertIf(comptime run_assert: bool, ok: bool) void {
 }
 
 var wasm_page_allocator = init: {
-    if (builtin.arch != .wasm32) {
+    if (builtin.cpu.arch != .wasm32) {
         @compileError("wasm allocator is only available for wasm32 arch");
     }
 
